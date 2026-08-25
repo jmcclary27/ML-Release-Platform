@@ -1,0 +1,29 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local persistence
+*.db
+*.sqlite
+*.sqlite3
+
+# Terraform
+terraform.tfstate
+terraform.tfstate.*
+.terraform/
+*.tfplan
+
+# IDE and OS files
+.DS_Store
+.idea/
+.vscode/
