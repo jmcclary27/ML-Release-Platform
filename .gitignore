@@ -2,15 +2,10 @@
 .env
 .env.*
 !.env.example
+.venv
 
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
+# Rust
+/target/
 
 # Local persistence
 *.db

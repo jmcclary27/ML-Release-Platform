@@ -37,4 +37,10 @@ When tooling is added, CI should enforce:
 - Terraform validation where Terraform exists; and
 - credential-leak prevention.
 
-This repository has no executable tooling or CI workflow yet, so there are currently no project commands to run. Add documented commands only alongside working tooling.
+Run the local Rust checks before submitting a change:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+```

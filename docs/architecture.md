@@ -43,7 +43,7 @@ Amazon EKS will provide the Kubernetes runtime, workload scheduling, and cluster
 The planned local MVP has no cloud dependency in its core path:
 
 ```text
-FastAPI
+Axum
    ↓
 Release Service
    ↓
