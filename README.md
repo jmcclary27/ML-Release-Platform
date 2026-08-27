@@ -12,7 +12,7 @@ Responsibilities are intentionally separated:
 - **Amazon EKS** provides the Kubernetes runtime.
 - **AWS services** provide infrastructure, storage, container registry, and observability where needed.
 
-The platform does not replace KServe or Argo Rollouts. This MVP does **not** connect to AWS, Kubernetes, KServe, Argo Rollouts, or external metrics systems.
+The platform does not replace KServe or Argo Rollouts. The Rust control plane remains local-first and does **not** connect to Kubernetes, KServe, Argo Rollouts, or external metrics systems. A separately managed AWS/EKS development foundation is available under [`infra/`](infra/README.md); it does not deploy this application yet.
 
 ## Product goal
 
@@ -71,13 +71,10 @@ See [the architecture document](docs/architecture.md) for component responsibili
 
 ## Local development
 
-Requires Python 3.11 or later.
+Requires Rust 1.98 or later.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-uvicorn ml_release_platform.main:app --reload
+cargo run
 ```
 
 The API uses `sqlite:///./ml_release_platform.db` by default. Set `ML_RELEASE_DATABASE_URL` to use another SQLAlchemy-compatible database URL; see [.env.example](.env.example).
@@ -85,11 +82,17 @@ The API uses `sqlite:///./ml_release_platform.db` by default. Set `ML_RELEASE_DA
 Run the local checks with:
 
 ```bash
-pytest
-ruff check .
-ruff format --check .
-mypy src
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
 ```
+
+## Delivery milestones
+
+- Local Control Plane — **complete**
+- AWS/EKS Foundation — **complete** ([deployment instructions](infra/README.md))
+- KServe Integration — **next**
+- Argo Rollouts — **future**
 
 ## Example workflow
 

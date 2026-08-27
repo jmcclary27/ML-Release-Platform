@@ -16,7 +16,7 @@
 - Local orchestration adapter
 - Tests
 
-## Milestone 2 — AWS/EKS
+## Milestone 2 — AWS/EKS Foundation (Complete)
 
 - Terraform
 - VPC
@@ -24,6 +24,8 @@
 - IAM
 - ECR
 - S3
+
+The implemented development foundation includes a two-AZ VPC, private EKS managed-node capacity, a cost-conscious single NAT gateway, ECR, private versioned S3 storage, and Terraform documentation/smoke test. It does not deploy the application or install KServe or Argo Rollouts.
 
 ## Milestone 3 — KServe
 

@@ -63,6 +63,10 @@ fn as_number(value: &Value, field_name: &str) -> Result<f64, PolicyValidationErr
     }
 }
 
+/// # Errors
+///
+/// Returns [`PolicyValidationError`] when the policy does not have exactly one valid, non-empty
+/// set of metric gates.
 pub fn parse_policy(raw_policy: &Value) -> Result<ReleasePolicy, PolicyValidationError> {
     let policy = raw_policy
         .as_object()
@@ -108,6 +112,9 @@ pub fn parse_policy(raw_policy: &Value) -> Result<ReleasePolicy, PolicyValidatio
         .map(|gates| ReleasePolicy { gates })
 }
 
+/// # Errors
+///
+/// Returns [`PolicyValidationError`] when a supplied metric value is not a finite number.
 pub fn evaluate_policy(
     policy: &ReleasePolicy,
     metrics: &Map<String, Value>,

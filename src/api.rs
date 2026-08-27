@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 use crate::{
     application::{ReleaseService, ServiceError},
     domain::{
-        models::ModelRelease,
+        models::{Metrics, ModelRelease},
         policy::{GateEvaluation, PolicyEvaluation},
     },
 };
@@ -56,18 +56,19 @@ struct ReleaseCreateRequest {
 
 impl ReleaseCreateRequest {
     fn validate_and_trim(mut self) -> Result<Self, ApiError> {
-        self.model_name = validate_string(self.model_name, "model_name", 255)?;
-        self.version = validate_string(self.version, "version", 255)?;
-        self.image_uri = validate_string(self.image_uri, "image_uri", 2048)?;
+        self.model_name = validate_string(&self.model_name, "model_name", 255)?;
+        self.version = validate_string(&self.version, "version", 255)?;
+        self.image_uri = validate_string(&self.image_uri, "image_uri", 2048)?;
         self.artifact_uri = self
             .artifact_uri
+            .as_deref()
             .map(|value| validate_string(value, "artifact_uri", 2048))
             .transpose()?;
         Ok(self)
     }
 }
 
-fn validate_string(value: String, field: &str, maximum: usize) -> Result<String, ApiError> {
+fn validate_string(value: &str, field: &str, maximum: usize) -> Result<String, ApiError> {
     let trimmed = value.trim().to_owned();
     if trimmed.is_empty() || trimmed.len() > maximum {
         return Err(ApiError::unprocessable(format!("Invalid {field}.")));
@@ -92,7 +93,7 @@ struct ReleaseResponse {
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     metadata: Map<String, Value>,
-    metrics: Map<String, f64>,
+    metrics: Metrics,
     evaluation: Option<EvaluationResponse>,
     failure_reason: Option<String>,
 }

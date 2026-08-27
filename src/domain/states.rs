@@ -86,6 +86,10 @@ impl std::str::FromStr for ReleaseStatus {
     }
 }
 
+/// # Errors
+///
+/// Returns [`InvalidTransitionError`] when the target status is not reachable from the current
+/// status.
 pub fn validate_transition(
     current: ReleaseStatus,
     target: ReleaseStatus,

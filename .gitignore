@@ -13,10 +13,16 @@
 *.sqlite3
 
 # Terraform
-terraform.tfstate
-terraform.tfstate.*
 .terraform/
+*.tfstate
+*.tfstate.*
 *.tfplan
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+crash.log
+crash.*.log
 
 # IDE and OS files
 .DS_Store

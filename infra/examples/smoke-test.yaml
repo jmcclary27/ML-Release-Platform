@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-smoke-test
+  labels:
+    app: nginx-smoke-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-smoke-test
+  template:
+    metadata:
+      labels:
+        app: nginx-smoke-test
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80

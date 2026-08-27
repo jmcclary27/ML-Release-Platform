@@ -47,6 +47,9 @@ impl ReleaseService {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] when the release cannot be persisted.
     pub async fn create_release(
         &self,
         model_name: String,
@@ -73,6 +76,9 @@ impl ReleaseService {
         Ok(self.repository.create(&release).await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] when persistence fails or the release does not exist.
     pub async fn get_release(&self, release_id: &str) -> Result<ModelRelease, ServiceError> {
         self.repository
             .get(release_id)
@@ -80,10 +86,17 @@ impl ReleaseService {
             .ok_or_else(|| ReleaseNotFoundError(release_id.to_owned()).into())
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] when persistence fails.
     pub async fn list_releases(&self) -> Result<Vec<ModelRelease>, ServiceError> {
         Ok(self.repository.list().await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] for invalid policies or metrics, missing releases, invalid state
+    /// transitions, or persistence failures.
     pub async fn evaluate_release(
         &self,
         release_id: &str,
@@ -97,11 +110,14 @@ impl ReleaseService {
         let evaluation = evaluate_policy(&policy, &raw_metrics)?;
         let metrics = raw_metrics
             .into_iter()
-            .map(|(name, value)| {
-                value.as_f64().map(|number| (name, number)).ok_or_else(|| {
-                    PolicyValidationError(format!("Metric '{name}' must be a number."))
-                })
-            })
+            .map(
+                |(name, value)| -> Result<(String, f64), PolicyValidationError> {
+                    let number = value.as_f64().ok_or_else(|| {
+                        PolicyValidationError(format!("Metric '{name}' must be a number."))
+                    })?;
+                    Ok((name, number))
+                },
+            )
             .collect::<Result<Metrics, _>>()?;
         let failure_reason =
             (!evaluation.passed).then(|| Self::evaluation_failure_reason(&evaluation));
@@ -117,6 +133,10 @@ impl ReleaseService {
             .await?)
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] for missing releases, invalid state transitions, or persistence
+    /// failures.
     pub async fn deploy_release(&self, release_id: &str) -> Result<ModelRelease, ServiceError> {
         let release = self.get_release(release_id).await?;
         let deploying = release.transition_to(ReleaseStatus::Deploying)?;
@@ -149,6 +169,10 @@ impl ReleaseService {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] for missing releases, invalid state transitions, or persistence
+    /// failures.
     pub async fn promote_release(&self, release_id: &str) -> Result<ModelRelease, ServiceError> {
         let release = self.get_release(release_id).await?;
         match self.orchestrator.promote_candidate(&release).await {
@@ -160,6 +184,10 @@ impl ReleaseService {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] for missing releases, invalid state transitions, or persistence
+    /// failures.
     pub async fn rollback_release(&self, release_id: &str) -> Result<ModelRelease, ServiceError> {
         let release = self.get_release(release_id).await?;
         match self.orchestrator.rollback_candidate(&release).await {

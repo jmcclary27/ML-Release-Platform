@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 
@@ -8,7 +10,7 @@ use super::{
 };
 
 pub type Metadata = Map<String, Value>;
-pub type Metrics = Map<String, f64>;
+pub type Metrics = BTreeMap<String, f64>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelRelease {
@@ -27,6 +29,10 @@ pub struct ModelRelease {
 }
 
 impl ModelRelease {
+    /// # Errors
+    ///
+    /// Returns [`InvalidTransitionError`] when the target status is not reachable from the
+    /// release's current status.
     pub fn transition_to(&self, target: ReleaseStatus) -> Result<Self, InvalidTransitionError> {
         validate_transition(self.status, target)?;
         let mut transitioned = self.clone();

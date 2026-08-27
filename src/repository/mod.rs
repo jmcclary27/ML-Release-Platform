@@ -12,7 +12,7 @@ use sqlx::{
 use thiserror::Error;
 
 use crate::domain::{
-    models::{Metadata, Metrics, ModelRelease},
+    models::{Metrics, ModelRelease},
     policy::PolicyEvaluation,
     states::ReleaseStatus,
 };
@@ -21,6 +21,8 @@ use crate::domain::{
 pub enum RepositoryError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("migration error: {0}")]
+    Migration(#[from] sqlx::migrate::MigrateError),
     #[error("invalid persisted release: {0}")]
     InvalidData(String),
 }
@@ -39,6 +41,9 @@ pub struct SqliteReleaseRepository {
 }
 
 impl SqliteReleaseRepository {
+    /// # Errors
+    ///
+    /// Returns [`RepositoryError`] when the database cannot be opened or migrations cannot run.
     pub async fn connect(database_url: &str) -> Result<Self, RepositoryError> {
         let normalized = normalize_sqlite_url(database_url);
         let options = SqliteConnectOptions::from_str(&normalized)
@@ -59,7 +64,7 @@ impl SqliteReleaseRepository {
     }
 }
 
-/// Convert SQLAlchemy's `sqlite:///` URL notation to SQLx's equivalent.
+/// Convert `SQLAlchemy`'s `sqlite:///` URL notation to `SQLx`'s equivalent.
 #[must_use]
 pub fn normalize_sqlite_url(url: &str) -> String {
     if let Some(path) = url.strip_prefix("sqlite:////") {
@@ -75,11 +80,11 @@ fn timestamp_to_database(value: DateTime<Utc>) -> String {
     value.to_rfc3339()
 }
 
-fn timestamp_from_database(value: String) -> Result<DateTime<Utc>, RepositoryError> {
-    DateTime::parse_from_rfc3339(&value)
+fn timestamp_from_database(value: &str) -> Result<DateTime<Utc>, RepositoryError> {
+    DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.with_timezone(&Utc))
         .or_else(|_| {
-            NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
                 .map(|timestamp| timestamp.and_utc())
         })
         .map_err(|error| {
@@ -87,12 +92,12 @@ fn timestamp_from_database(value: String) -> Result<DateTime<Utc>, RepositoryErr
         })
 }
 
-fn json_from_database(value: String, field: &str) -> Result<Value, RepositoryError> {
-    serde_json::from_str(&value)
+fn json_from_database(value: &str, field: &str) -> Result<Value, RepositoryError> {
+    serde_json::from_str(value)
         .map_err(|error| RepositoryError::InvalidData(format!("invalid {field} JSON: {error}")))
 }
 
-fn value_as_object(value: Value, field: &str) -> Result<Map<String, Value>, RepositoryError> {
+fn value_as_object(value: &Value, field: &str) -> Result<Map<String, Value>, RepositoryError> {
     value
         .as_object()
         .cloned()
@@ -102,11 +107,11 @@ fn value_as_object(value: Value, field: &str) -> Result<Map<String, Value>, Repo
 fn decode_release(row: &sqlx::sqlite::SqliteRow) -> Result<ModelRelease, RepositoryError> {
     let status: String = row.try_get("status")?;
     let metadata = value_as_object(
-        json_from_database(row.try_get("metadata")?, "metadata")?,
+        &json_from_database(&row.try_get::<String, _>("metadata")?, "metadata")?,
         "metadata",
     )?;
     let raw_metrics = value_as_object(
-        json_from_database(row.try_get("metrics")?, "metrics")?,
+        &json_from_database(&row.try_get::<String, _>("metrics")?, "metrics")?,
         "metrics",
     )?;
     let metrics = raw_metrics
@@ -132,8 +137,8 @@ fn decode_release(row: &sqlx::sqlite::SqliteRow) -> Result<ModelRelease, Reposit
         image_uri: row.try_get("image_uri")?,
         artifact_uri: row.try_get("artifact_uri")?,
         status: ReleaseStatus::from_str(&status).map_err(RepositoryError::InvalidData)?,
-        created_at: timestamp_from_database(row.try_get("created_at")?)?,
-        updated_at: timestamp_from_database(row.try_get("updated_at")?)?,
+        created_at: timestamp_from_database(&row.try_get::<String, _>("created_at")?)?,
+        updated_at: timestamp_from_database(&row.try_get::<String, _>("updated_at")?)?,
         metadata,
         metrics,
         evaluation,

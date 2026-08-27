@@ -38,9 +38,9 @@ Argo Rollouts will execute progressive traffic shifts, rollout progression, and 
 
 Amazon EKS will provide the Kubernetes runtime, workload scheduling, and cluster-level infrastructure.
 
-## Initial architecture
+## Current local architecture
 
-The planned local MVP has no cloud dependency in its core path:
+The implemented local control plane has no cloud dependency in its core path:
 
 ```text
 Axum
@@ -57,6 +57,12 @@ Repositories
 Orchestration
    └── Local/mock implementation initially
 ```
+
+## AWS/EKS foundation
+
+Terraform under `infra/` provisions the development Kubernetes runtime separately from the application: a two-AZ VPC with private worker subnets, an EKS cluster and managed node group, ECR, and a private S3 artifact bucket. It does not introduce an AWS dependency into the API, application, domain, or local orchestration path.
+
+The future cloud integration remains behind the existing orchestration interface:
 
 The target cloud architecture is:
 
@@ -112,4 +118,4 @@ This platform is not intended to provide:
 
 ## Implementation guidance
 
-Maintain the dependency direction `API → Application/Service → Domain → Repositories + Infrastructure Adapters`. New source and tests will be introduced with Milestone 1 under `src/ml_release_platform/` and `tests/`, respectively. Infrastructure configuration should remain separate from those layers.
+Maintain the dependency direction `API → Application/Service → Domain → Repositories + Infrastructure Adapters`. Infrastructure configuration remains separate from those layers. A future KServe adapter must be introduced behind the orchestration boundary rather than coupling the current Rust API or domain logic directly to AWS or Kubernetes.

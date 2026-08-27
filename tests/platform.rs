@@ -1,10 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, str::FromStr, sync::Arc};
 
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chrono::Utc;
 use ml_release_platform::{
     application::ReleaseService,
     create_app,
@@ -17,7 +16,7 @@ use ml_release_platform::{
     repository::{ReleaseRepository, SqliteReleaseRepository},
 };
 use serde_json::{Map, Value, json};
-use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower::ServiceExt;
 
 fn database_url(name: &str) -> (String, PathBuf) {
@@ -167,14 +166,12 @@ async fn evaluation_persists_evidence_and_enforces_transitions() {
         .unwrap();
     assert_eq!(evaluated.status, ReleaseStatus::Ready);
     assert!(evaluated.evaluation.unwrap().passed);
-    assert_eq!(
-        service
-            .get_release(&release.release_id)
-            .await
-            .unwrap()
-            .metrics["latency_p95"],
-        143.0
-    );
+    let latency_p95 = service
+        .get_release(&release.release_id)
+        .await
+        .unwrap()
+        .metrics["latency_p95"];
+    assert!((latency_p95 - 143.0).abs() < f64::EPSILON);
     assert!(
         service
             .evaluate_release(&release.release_id, metrics(), policy())
@@ -278,7 +275,13 @@ async fn local_orchestration_promotes_rolls_back_and_fails_unhealthy_candidates(
 async fn legacy_python_schema_and_rows_remain_readable_and_updatable() {
     let (url, path) = database_url("legacy");
     let raw_url = ml_release_platform::repository::normalize_sqlite_url(&url);
-    let pool = sqlx::SqlitePool::connect(&raw_url).await.unwrap();
+    let options = SqliteConnectOptions::from_str(&raw_url)
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .unwrap();
     sqlx::query("CREATE TABLE releases (release_id VARCHAR(36) PRIMARY KEY NOT NULL, model_name VARCHAR(255) NOT NULL, version VARCHAR(255) NOT NULL, image_uri VARCHAR(2048) NOT NULL, artifact_uri VARCHAR(2048), status VARCHAR(32) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, metadata JSON NOT NULL, metrics JSON NOT NULL, evaluation JSON, failure_reason VARCHAR(2048))").execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO releases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind("legacy-release")

@@ -1,0 +1,18 @@
+# Copy this file to terraform.tfvars and replace the placeholder values.
+# terraform.tfvars is intentionally ignored by Git.
+
+aws_region  = "us-east-1"
+project_name = "ml-release-platform"
+environment  = "dev"
+
+# Restrict the EKS public API to your trusted network. Replace this example.
+cluster_endpoint_public_access_cidrs = ["203.0.113.10/32"]
+
+# Use a static IAM user or role ARN, not an STS assumed-role ARN.
+cluster_admin_principal_arn = "arn:aws:iam::123456789012:role/PlatformAdministrator"
+
+# Development defaults: one on-demand general-purpose worker with headroom to scale to two.
+node_instance_types = ["t3.medium"]
+node_desired_size   = 1
+node_min_size       = 1
+node_max_size       = 2

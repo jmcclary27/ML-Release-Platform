@@ -17,10 +17,14 @@ use orchestration::LocalReleaseOrchestrator;
 use repository::SqliteReleaseRepository;
 
 /// Build an independently configurable application and initialise local persistence.
+///
+/// # Errors
+///
+/// Returns [`repository::RepositoryError`] when the configured database cannot be opened or
+/// initialised.
 pub async fn create_app(database_url: Option<&str>) -> Result<Router, repository::RepositoryError> {
-    let database_url = database_url
-        .map(str::to_owned)
-        .unwrap_or_else(|| Settings::from_environment().database_url);
+    let database_url =
+        database_url.map_or_else(|| Settings::from_environment().database_url, str::to_owned);
     let repository = Arc::new(SqliteReleaseRepository::connect(&database_url).await?);
     let service = Arc::new(ReleaseService::new(
         repository,
