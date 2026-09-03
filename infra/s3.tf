@@ -6,7 +6,7 @@ locals {
 
 resource "aws_s3_bucket" "model_artifacts" {
   bucket        = local.model_artifact_bucket_name
-  force_destroy = false
+  force_destroy = true
 
   tags = {
     Name = local.model_artifact_bucket_name
@@ -50,11 +50,15 @@ resource "aws_s3_bucket_lifecycle_configuration" "model_artifacts" {
     filter {}
 
     abort_incomplete_multipart_upload {
-      days_after_initiation = 7
+      days_after_initiation = 1
+    }
+
+    expiration {
+      days = var.artifact_retention_days
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 30
+      noncurrent_days = 1
     }
   }
 

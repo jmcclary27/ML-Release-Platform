@@ -25,7 +25,7 @@
 - ECR
 - S3
 
-The implemented development foundation includes a two-AZ VPC, private EKS managed-node capacity, a cost-conscious single NAT gateway, ECR, private versioned S3 storage, and Terraform documentation/smoke test. It does not deploy the application or install KServe or Argo Rollouts.
+The implemented development foundation includes a two-AZ VPC, a single public EKS managed-node worker (to avoid NAT gateway cost), ECR, private versioned S3 storage, Terraform lifecycle commands, and a Kubernetes Job smoke test. It does not deploy the application or install KServe or Argo Rollouts.
 
 ## Milestone 3 — KServe
 

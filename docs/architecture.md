@@ -60,7 +60,7 @@ Orchestration
 
 ## AWS/EKS foundation
 
-Terraform under `infra/` provisions the development Kubernetes runtime separately from the application: a two-AZ VPC with private worker subnets, an EKS cluster and managed node group, ECR, and a private S3 artifact bucket. It does not introduce an AWS dependency into the API, application, domain, or local orchestration path.
+Terraform under `infra/` provisions the development Kubernetes runtime separately from the application: a two-AZ VPC with public demo-worker subnets, an EKS cluster and one managed node, ECR, and a private S3 artifact bucket. The public-worker topology avoids NAT gateway cost for an hours-long portfolio demo; its Kubernetes API is CIDR-restricted and it has no SSH or public workload configuration. It does not introduce an AWS dependency into the API, application, domain, or local orchestration path.
 
 The future cloud integration remains behind the existing orchestration interface:
 

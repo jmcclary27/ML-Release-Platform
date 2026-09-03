@@ -1,6 +1,7 @@
 resource "aws_ecr_repository" "platform" {
   name                 = "${local.name_prefix}-platform"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -18,7 +19,7 @@ resource "aws_ecr_lifecycle_policy" "platform" {
     rules = [
       {
         rulePriority = 1
-        description  = "Retain only the most recent development images."
+        description  = "Retain only the most recent ephemeral-demo images."
         selection = {
           tagStatus   = "any"
           countType   = "imageCountMoreThan"

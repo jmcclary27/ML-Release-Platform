@@ -121,7 +121,7 @@ variable "node_min_size" {
 variable "node_max_size" {
   description = "Maximum number of development worker nodes."
   type        = number
-  default     = 2
+  default     = 1
 
   validation {
     condition     = var.node_max_size >= var.node_desired_size && var.node_max_size >= var.node_min_size
@@ -132,10 +132,21 @@ variable "node_max_size" {
 variable "ecr_image_retention_count" {
   description = "Number of newest ECR images retained by the development lifecycle policy."
   type        = number
-  default     = 10
+  default     = 3
 
   validation {
     condition     = var.ecr_image_retention_count >= 1
     error_message = "ecr_image_retention_count must be at least one."
+  }
+}
+
+variable "artifact_retention_days" {
+  description = "Maximum days to retain S3 artifacts if an ephemeral demo stack is left running."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.artifact_retention_days >= 1 && var.artifact_retention_days <= 30
+    error_message = "artifact_retention_days must be between 1 and 30 days for this ephemeral demo environment."
   }
 }

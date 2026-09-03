@@ -1,92 +1,103 @@
-# AWS/EKS infrastructure foundation
+# Ephemeral AWS/EKS demo foundation
 
-This directory creates the development AWS foundation for the ML Release Platform. It provisions a VPC, EKS cluster and managed node group, ECR repository, and private S3 artifact bucket. It does not deploy the control plane, KServe, Argo Rollouts, or any model-serving workload.
+This directory provisions only the AWS foundation for a short-lived ML Release Platform demo: VPC networking, an EKS control plane, one managed worker, a future container repository, and a private future-artifact bucket. It does **not** deploy the control plane, KServe, Argo Rollouts, model workloads, databases, load balancers, persistent volumes, or observability services.
 
-## Prerequisites
+The intended lifecycle is **CREATE → VERIFY → DEMO → DESTROY**. The environment is for hours, not days. Run `make infra-down` as soon as the demo is complete.
 
-- Terraform 1.6 or later
+## Architecture and cost choices
+
+EKS requires subnets in at least two Availability Zones, so this stack creates two public subnets, an internet gateway, and public routing. Its single `t3.medium` managed node runs in those subnets and has a public IPv4 address so it can retrieve EKS and container images without a NAT gateway. There is no SSH configuration and no public workload or load-balancer service in this foundation. EKS-managed security groups do not add Internet-wide ingress; the public EKS API is restricted to the CIDRs supplied in `cluster_endpoint_public_access_cidrs` while private endpoint access remains enabled.
+
+Using public workers is a deliberate demo-only cost tradeoff. It removes the recurring NAT gateway and Elastic IP cost while preserving a real EKS cluster with restricted control-plane access. A production deployment should use private workers and appropriate egress design.
+
+The primary charges while the stack exists are:
+
+- EKS control-plane hourly charges;
+- one on-demand `t3.medium` worker and its public IPv4 address;
+- ECR image storage and S3 object storage, if used; and
+- normal Internet/AWS data-transfer charges.
+
+There is intentionally no NAT gateway, load balancer, database, persistent disk, or monitoring service. ECR retains only three images; S3 expires artifacts after seven days and noncurrent versions after one day. Current AWS pricing varies by region, so review it before applying.
+
+All resources receive `Project`, `Environment`, `ManagedBy=Terraform`, `Lifecycle=ephemeral-demo`, and `EphemeralDemo=true` tags. Explicit Terraform destruction also deletes contents of only this stack's ECR repository and S3 bucket.
+
+## Prerequisites and authentication
+
+- Terraform 1.7 or later
 - AWS CLI v2
 - `kubectl`
-- AWS credentials or a profile with permission to create the described VPC, IAM, EKS, ECR, and S3 resources
+- GNU Make
+- AWS credentials for the target account and region; no keys belong in this repository
 
-Use any configured AWS profile; no profile name is assumed. The credentials need permission to create EKS access entries and to use the IAM principal named in `cluster_admin_principal_arn`.
-
-## Configure and deploy
-
-From the repository root:
+Authenticate with your normal AWS SSO, profile, environment credentials, or instance/role credentials. For example, with an SSO profile:
 
 ```bash
-cd infra
-cp terraform.tfvars.example terraform.tfvars
+aws sso login --profile <profile>
+export AWS_PROFILE=<profile>
+aws sts get-caller-identity
 ```
 
-Edit `terraform.tfvars` before planning:
+The provisioning identity needs permissions to create, tag, describe, and delete the VPC/EC2 networking resources, EKS cluster/node group/access entries, required IAM roles and managed-policy attachments, ECR repository/lifecycle policy, and S3 bucket/configuration. It also needs permission to pass the created EKS IAM roles. The static IAM user or role configured as `cluster_admin_principal_arn` needs EKS access-entry administration and becomes Kubernetes cluster admin. Do not use an STS assumed-role session ARN for that variable.
 
-- Set `cluster_endpoint_public_access_cidrs` to the public `/32` (or approved CIDR) from which you will run `kubectl`.
-- Set `cluster_admin_principal_arn` to a static IAM role or user ARN. Do not use an `arn:aws:sts::...:assumed-role/...` session ARN.
+## Create and verify
+
+From the repository root, create an ignored local configuration file:
+
+```bash
+cp infra/terraform.tfvars.example infra/terraform.tfvars
+```
+
+Edit both required values before any plan:
+
+- Set `cluster_endpoint_public_access_cidrs` to your current public `/32` or another approved CIDR. Never use `0.0.0.0/0`.
+- Set `cluster_admin_principal_arn` to your static IAM role or user ARN.
 
 Then run:
 
 ```bash
-terraform init
-terraform fmt -check
-terraform validate
-terraform plan
-terraform apply
+make infra-init
+make infra-plan
+make infra-up
+make kubeconfig
+make infra-verify
+make infra-smoke
 ```
 
-The configuration uses local Terraform state for this individual development environment. Local state is not committed. Use a remote backend with locking before sharing state with a team or using this as a production environment.
+`infra-up` visibly runs interactive `terraform apply` and creates billable resources. `infra-verify` confirms kubeconfig/API connectivity and that every worker is Ready. `infra-smoke` creates a tiny, resource-bounded Job, waits for successful scheduling and completion, prints its log, and removes it even if the wait fails. Run `make infra-smoke-clean` if a local interruption prevents that cleanup.
 
-## Connect and verify
+For the equivalent direct Terraform workflow, use `terraform -chdir=infra init`, `plan`, and `apply`; `make kubeconfig` runs the `aws eks update-kubeconfig` command emitted by the Terraform output.
 
-After apply completes, run the command emitted in the `kubeconfig_command` output, or run:
+## Demo and teardown
+
+Run the future platform demo only after verification. Before teardown, remove every Kubernetes object created by the demo, particularly `Service` objects of type `LoadBalancer`, persistent-volume claims, and anything that provisions AWS resources. Check:
 
 ```bash
-aws eks update-kubeconfig \
-  --region "$(terraform output -raw aws_region)" \
-  --name "$(terraform output -raw cluster_name)"
-
-kubectl get nodes
-kubectl get pods --all-namespaces
+kubectl get services --all-namespaces
+kubectl get pvc --all-namespaces
+kubectl get ingress --all-namespaces
+terraform -chdir=infra output -raw teardown_verification_commands
 ```
 
-The EKS API has a private endpoint for in-VPC traffic and a public endpoint restricted to `cluster_endpoint_public_access_cidrs`. If `kubectl` cannot connect, confirm that your current public IP matches the configured CIDR and that the AWS identity used by the CLI is the identity represented by `cluster_admin_principal_arn` (or can assume it).
-
-Run the optional workload smoke test:
+Save the last output before teardown; it contains account/region-specific AWS checks to run afterward. Then destroy deliberately:
 
 ```bash
-kubectl apply -f examples/smoke-test.yaml
-kubectl rollout status deployment/nginx-smoke-test --timeout=5m
-kubectl get deployment nginx-smoke-test
-kubectl get pods -l app=nginx-smoke-test
+make infra-down
 ```
 
-Clean up the smoke test when finished:
+The target prints its behavior and invokes interactive `terraform destroy`; it does not schedule or hide deletion. ECR images and every S3 object/version in the stack bucket are automatically removed because this is an explicitly ephemeral demo stack. No unrelated resource is selected by those settings.
+
+After successful destroy, run the saved EKS, ECR, and S3 lookup commands: each should return a not-found error. Also verify that no EC2 instances, load balancers, or ENIs remain with `Project=ml-release-platform` and `EphemeralDemo=true` in the target region, and that `terraform -chdir=infra state list` returns no managed infrastructure.
+
+If destroy is blocked, wait for Kubernetes-created load balancers/ENIs to finish deleting, delete their originating Kubernetes resources, and retry. If an external actor has attached an ENI or security group to another resource, identify and remove that external attachment rather than force-deleting Terraform resources. Do not run `terraform destroy` with a different account, region, or state file than the one used to create the demo.
+
+## Local validation
+
+These commands do not create AWS resources:
 
 ```bash
-kubectl delete -f examples/smoke-test.yaml
+make infra-fmt
+make infra-validate
+make infra-test
 ```
 
-## Networking and access design
-
-The VPC spans two availability zones with one public and one private subnet in each. Worker nodes run only in the private subnets and do not receive public IPs. Public subnets are tagged for future internet-facing Kubernetes load balancers; private subnets are tagged for internal load balancers.
-
-A single NAT gateway provides outbound IPv4 access to both private subnets. This is intentional for a portfolio/development environment: it keeps worker nodes private while avoiding the recurring cost of a NAT gateway per AZ. It is not zone-resilient; a production design should use one NAT gateway per AZ or an explicitly evaluated alternative.
-
-EKS authentication uses API-only access entries rather than the legacy `aws-auth` ConfigMap. The configured administrator receives the AWS-managed EKS cluster-admin access policy. Future workload access to AWS services should use EKS Pod Identity or IRSA; this foundation intentionally creates no application/pod IAM permissions.
-
-## Cost considerations
-
-AWS charges accrue while these resources exist. The primary ongoing costs are the EKS control plane, on-demand EC2 worker node, NAT gateway and Elastic IP, ECR image storage, and S3 storage/data transfer. The configuration defaults to one `t3.medium` worker and a single NAT gateway to limit development cost, at the availability tradeoffs described above. The ECR lifecycle policy retains only the newest ten images; S3 keeps current artifact versions but expires noncurrent versions after 30 days.
-
-Review current AWS pricing for the selected region before applying. Do not leave the environment running when it is not needed.
-
-## Destroy
-
-Delete Kubernetes resources that created AWS resources, such as `Service` objects of type `LoadBalancer`, before destroying the foundation. Then run:
-
-```bash
-terraform destroy
-```
-
-The S3 bucket deliberately has `force_destroy = false` to avoid deleting artifacts accidentally. Empty it intentionally before destroying Terraform infrastructure if it contains objects or versions. ECR images may likewise need to be removed before the repository can be deleted.
+`infra-test` uses Terraform's mocked AWS provider and checks the two-subnet EKS topology, default single-node capacity, restricted API configuration, standard EKS support policy, and force-destroy settings without AWS credentials.

@@ -8,11 +8,15 @@ resource "aws_eks_cluster" "main" {
     bootstrap_cluster_creator_admin_permissions = false
   }
 
+  upgrade_policy {
+    support_type = "STANDARD"
+  }
+
   vpc_config {
     endpoint_private_access = true
     endpoint_public_access  = true
     public_access_cidrs     = var.cluster_endpoint_public_access_cidrs
-    subnet_ids              = concat(aws_subnet.private[*].id, aws_subnet.public[*].id)
+    subnet_ids              = aws_subnet.public[*].id
   }
 
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
@@ -42,8 +46,10 @@ resource "aws_eks_node_group" "development" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "${local.name_prefix}-default"
   node_role_arn   = aws_iam_role.eks_node.arn
-  subnet_ids      = aws_subnet.private[*].id
-  version         = var.kubernetes_version
+  # Public subnets avoid a NAT gateway's recurring cost. There is no remote
+  # access block, so this configuration does not open SSH access to workers.
+  subnet_ids = aws_subnet.public[*].id
+  version    = var.kubernetes_version
 
   capacity_type  = "ON_DEMAND"
   instance_types = var.node_instance_types

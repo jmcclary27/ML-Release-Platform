@@ -11,8 +11,12 @@ cluster_endpoint_public_access_cidrs = ["203.0.113.10/32"]
 # Use a static IAM user or role ARN, not an STS assumed-role ARN.
 cluster_admin_principal_arn = "arn:aws:iam::123456789012:role/PlatformAdministrator"
 
-# Development defaults: one on-demand general-purpose worker with headroom to scale to two.
+# Ephemeral-demo defaults: exactly one on-demand general-purpose worker.
+# Raise these values deliberately for future KServe or multi-workload demos.
 node_instance_types = ["t3.medium"]
 node_desired_size   = 1
 node_min_size       = 1
-node_max_size       = 2
+node_max_size       = 1
+
+# S3 is a future artifact boundary. Retain accidental uploads for no more than a week.
+artifact_retention_days = 7

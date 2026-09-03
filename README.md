@@ -12,7 +12,7 @@ Responsibilities are intentionally separated:
 - **Amazon EKS** provides the Kubernetes runtime.
 - **AWS services** provide infrastructure, storage, container registry, and observability where needed.
 
-The platform does not replace KServe or Argo Rollouts. The Rust control plane remains local-first and does **not** connect to Kubernetes, KServe, Argo Rollouts, or external metrics systems. A separately managed AWS/EKS development foundation is available under [`infra/`](infra/README.md); it does not deploy this application yet.
+The platform does not replace KServe or Argo Rollouts. The Rust control plane remains local-first and does **not** connect to Kubernetes, KServe, Argo Rollouts, or external metrics systems. A separately managed, low-cost, ephemeral AWS/EKS foundation is available under [`infra/`](infra/README.md); it does not deploy this application yet.
 
 ## Product goal
 
@@ -90,7 +90,7 @@ cargo test --all-features
 ## Delivery milestones
 
 - Local Control Plane — **complete**
-- AWS/EKS Foundation — **complete** ([deployment instructions](infra/README.md))
+- AWS/EKS Foundation — **complete** ([ephemeral demo lifecycle](infra/README.md))
 - KServe Integration — **next**
 - Argo Rollouts — **future**
 
