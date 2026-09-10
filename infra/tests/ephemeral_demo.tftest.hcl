@@ -10,6 +10,50 @@ mock_provider "aws" {
       account_id = "123456789012"
     }
   }
+
+  mock_data "aws_partition" {
+    defaults = {
+      partition = "aws"
+    }
+  }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.eks_cluster_assume_role
+
+  values = {
+    json = <<-JSON
+      {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"eks.amazonaws.com"},"Action":"sts:AssumeRole"}]}
+    JSON
+  }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.eks_node_assume_role
+
+  values = {
+    json = <<-JSON
+      {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}
+    JSON
+  }
+}
+
+override_resource {
+  target          = aws_subnet.public[0]
+  override_during = plan
+
+  values = {
+    id = "subnet-00000000000000001"
+  }
+}
+
+override_resource {
+  target          = aws_subnet.public[1]
+  override_during = plan
+
+  values = {
+    id = "subnet-00000000000000002"
+  }
 }
 
 run "plans_an_ephemeral_single_node_demo" {
@@ -18,6 +62,10 @@ run "plans_an_ephemeral_single_node_demo" {
   variables {
     cluster_endpoint_public_access_cidrs = ["203.0.113.10/32"]
     cluster_admin_principal_arn          = "arn:aws:iam::123456789012:role/PlatformAdministrator"
+    # Terraform tests load developer-local terraform.tfvars, so this pins the offline ephemeral-demo fixture to 1/1/1.
+    node_desired_size = 1
+    node_min_size     = 1
+    node_max_size     = 1
   }
 
   assert {
