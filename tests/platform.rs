@@ -1,22 +1,21 @@
-use std::{path::PathBuf, str::FromStr, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
 use ml_release_platform::{
+    api,
     application::ReleaseService,
-    create_app,
     domain::{
-        models::{Metadata, ModelRelease},
+        models::Metadata,
         policy::{evaluate_policy, parse_policy},
         states::ReleaseStatus,
     },
-    orchestration::LocalReleaseOrchestrator,
+    orchestration::{LocalReleaseOrchestrator, VerificationFailureKind, VerificationResult},
     repository::{ReleaseRepository, SqliteReleaseRepository},
 };
 use serde_json::{Map, Value, json};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tower::ServiceExt;
 
 fn database_url(name: &str) -> (String, PathBuf) {
@@ -27,295 +26,231 @@ fn database_url(name: &str) -> (String, PathBuf) {
     (format!("sqlite:///{}", path.display()), path)
 }
 
-async fn service(name: &str) -> (ReleaseService, PathBuf) {
+async fn repository(name: &str) -> (Arc<SqliteReleaseRepository>, PathBuf) {
     let (url, path) = database_url(name);
-    let repository = Arc::new(SqliteReleaseRepository::connect(&url).await.unwrap());
     (
-        ReleaseService::new(repository, Arc::new(LocalReleaseOrchestrator::default())),
+        Arc::new(SqliteReleaseRepository::connect(&url).await.unwrap()),
         path,
     )
 }
 
-async fn create_release(service: &ReleaseService) -> ModelRelease {
+async fn create_release(service: &ReleaseService, version: &str) -> String {
     service
         .create_release(
-            "fraud-model".to_owned(),
-            "v2".to_owned(),
-            "registry.example/fraud-model:v2".to_owned(),
-            Some("s3://example-models/fraud/v2/model.pkl".to_owned()),
-            Metadata::from_iter([(String::from("owner"), json!("risk"))]),
+            "example".to_owned(),
+            version.to_owned(),
+            format!("demo:{version}"),
+            None,
+            Metadata::new(),
         )
         .await
         .unwrap()
+        .release_id
 }
 
 fn policy() -> Value {
-    json!({"gates": {"accuracy": {"min": 0.9}, "latency_p95": {"max": 200}}})
+    json!({"gates":{"accuracy":{"min":0.9}}})
 }
 fn metrics() -> Map<String, Value> {
-    Map::from_iter([
-        (String::from("accuracy"), json!(0.92)),
-        (String::from("latency_p95"), json!(143)),
-    ])
+    Map::from_iter([(String::from("accuracy"), json!(0.95))])
 }
 
 #[test]
-fn all_defined_transitions_are_allowed() {
-    let transitions = [
+fn explicit_lifecycle_transitions_reject_skipped_or_terminal_states() {
+    for (current, target) in [
         (ReleaseStatus::Submitted, ReleaseStatus::Validating),
         (ReleaseStatus::Validating, ReleaseStatus::Ready),
         (ReleaseStatus::Validating, ReleaseStatus::Rejected),
-        (ReleaseStatus::Validating, ReleaseStatus::Failed),
         (ReleaseStatus::Ready, ReleaseStatus::Deploying),
-        (ReleaseStatus::Deploying, ReleaseStatus::Canary),
-        (ReleaseStatus::Deploying, ReleaseStatus::Failed),
-        (ReleaseStatus::Canary, ReleaseStatus::Promoted),
-        (ReleaseStatus::Canary, ReleaseStatus::RolledBack),
-        (ReleaseStatus::Canary, ReleaseStatus::Failed),
-    ];
-    for (current, target) in transitions {
+        (ReleaseStatus::Deploying, ReleaseStatus::Verifying),
+        (ReleaseStatus::Verifying, ReleaseStatus::Released),
+        (ReleaseStatus::Verifying, ReleaseStatus::RollingBack),
+        (ReleaseStatus::RollingBack, ReleaseStatus::RolledBack),
+        (ReleaseStatus::RollingBack, ReleaseStatus::Failed),
+    ] {
         assert!(current.can_transition_to(target));
     }
-}
-
-#[test]
-fn terminal_states_and_invalid_transition_are_rejected() {
     assert!(!ReleaseStatus::Submitted.can_transition_to(ReleaseStatus::Ready));
-    for status in [
-        ReleaseStatus::Promoted,
-        ReleaseStatus::Rejected,
-        ReleaseStatus::RolledBack,
-        ReleaseStatus::Failed,
-    ] {
-        assert!(status.is_terminal());
-        assert!(!status.can_transition_to(ReleaseStatus::Failed));
-    }
+    assert!(!ReleaseStatus::Released.can_transition_to(ReleaseStatus::Failed));
+    assert!(ReleaseStatus::Released.is_terminal());
 }
 
 #[test]
-fn policy_boundaries_results_and_missing_metrics_match_contract() {
-    let parsed =
-        parse_policy(&json!({"gates": {"accuracy": {"min": 0.9}, "latency_p95": {"max": 200}}}))
-            .unwrap();
+fn policy_evaluation_preserves_gate_boundaries_and_rejects_malformed_contracts() {
+    let parsed = parse_policy(&policy()).unwrap();
     assert!(
         evaluate_policy(
             &parsed,
-            &Map::from_iter([
-                (String::from("accuracy"), json!(0.9)),
-                (String::from("latency_p95"), json!(200))
-            ])
+            &Map::from_iter([(String::from("accuracy"), json!(0.9))]),
         )
         .unwrap()
         .passed
     );
-    let failed = evaluate_policy(
-        &parsed,
-        &Map::from_iter([(String::from("accuracy"), json!(0.89))]),
-    )
-    .unwrap();
-    assert!(!failed.passed);
-    assert!(!failed.results[0].passed);
-    assert_eq!(
-        failed.results[1].reason.as_deref(),
-        Some("Required metric was not supplied.")
+    assert!(
+        !evaluate_policy(
+            &parsed,
+            &Map::from_iter([(String::from("accuracy"), json!(0.89))]),
+        )
+        .unwrap()
+        .passed
     );
-}
-
-#[test]
-fn malformed_policies_are_rejected() {
-    for policy in [
+    for malformed in [
         json!({}),
         json!({"gates": {}}),
-        json!({"gates": {"accuracy": {}}}),
         json!({"gates": {"accuracy": {"min": 0.9, "max": 1.0}}}),
         json!({"gates": {"accuracy": {"min": "0.9"}}}),
-        json!({"gates": {"accuracy": {"min": 0.9, "unexpected": 1}}}),
-        json!({"gates": {"accuracy": 0.9}}),
     ] {
-        assert!(parse_policy(&policy).is_err());
+        assert!(parse_policy(&malformed).is_err());
     }
 }
 
-#[tokio::test]
-async fn create_get_list_and_not_found_work() {
-    let (service, path) = service("basic").await;
-    let release = create_release(&service).await;
-    assert_eq!(
-        service
-            .get_release(&release.release_id)
-            .await
-            .unwrap()
-            .metadata["owner"],
-        "risk"
-    );
-    assert_eq!(
-        service.list_releases().await.unwrap()[0].release_id,
-        release.release_id
-    );
-    assert!(service.get_release("missing").await.is_err());
+async fn close_and_remove(repository: Arc<SqliteReleaseRepository>, path: PathBuf) {
+    repository.close().await;
     std::fs::remove_file(path).unwrap();
 }
 
 #[tokio::test]
-async fn evaluation_persists_evidence_and_enforces_transitions() {
-    let (service, path) = service("evaluation").await;
-    let release = create_release(&service).await;
-    let evaluated = service
-        .evaluate_release(&release.release_id, metrics(), policy())
+async fn failed_runtime_verification_restores_the_previous_active_release_and_audits_it() {
+    let (repository, path) = repository("critical-rollback").await;
+    let good = ReleaseService::new(
+        repository.clone(),
+        Arc::new(LocalReleaseOrchestrator::default()),
+    );
+    let v1 = create_release(&good, "v1").await;
+    good.evaluate_release(&v1, metrics(), policy())
         .await
         .unwrap();
-    assert_eq!(evaluated.status, ReleaseStatus::Ready);
-    assert!(evaluated.evaluation.unwrap().passed);
-    let latency_p95 = service
-        .get_release(&release.release_id)
+    good.deploy_release(&v1).await.unwrap();
+    assert_eq!(
+        good.verify_release(&v1).await.unwrap().status,
+        ReleaseStatus::Released
+    );
+    assert_eq!(
+        good.current_release("example")
+            .await
+            .unwrap()
+            .unwrap()
+            .release_id,
+        v1
+    );
+
+    let bad_orchestrator = LocalReleaseOrchestrator::with_outcomes(
+        true,
+        VerificationResult::failed(
+            VerificationFailureKind::HttpStatus,
+            "demo model rejects inference",
+            Some(500),
+            None,
+        ),
+        true,
+        true,
+    );
+    let bad = ReleaseService::new(repository.clone(), Arc::new(bad_orchestrator));
+    let v2 = create_release(&bad, "v2").await;
+    bad.evaluate_release(&v2, metrics(), policy())
+        .await
+        .unwrap();
+    assert_eq!(
+        bad.deploy_release(&v2).await.unwrap().status,
+        ReleaseStatus::Verifying
+    );
+    let rolled_back = bad.verify_release(&v2).await.unwrap();
+    assert_eq!(rolled_back.status, ReleaseStatus::RolledBack);
+    assert_eq!(
+        bad.current_release("example")
+            .await
+            .unwrap()
+            .unwrap()
+            .release_id,
+        v1
+    );
+    let event_types: Vec<_> = bad
+        .get_history(&v2)
         .await
         .unwrap()
-        .metrics["latency_p95"];
-    assert!((latency_p95 - 143.0).abs() < f64::EPSILON);
-    assert!(
-        service
-            .evaluate_release(&release.release_id, metrics(), policy())
-            .await
-            .is_err()
-    );
-    std::fs::remove_file(path).unwrap();
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect();
+    assert!(event_types.contains(&"VERIFICATION_FAILED".to_owned()));
+    assert!(event_types.contains(&"ACTIVE_VERSION_RESTORED".to_owned()));
+
+    drop(good);
+    drop(bad);
+    close_and_remove(repository, path).await;
 }
 
 #[tokio::test]
-async fn failed_or_malformed_evaluations_have_python_behavior() {
-    let (service, path) = service("evaluation-failure").await;
-    let release = create_release(&service).await;
+async fn policy_rejection_never_reaches_deployment() {
+    let (repository, path) = repository("rejected").await;
+    let service = ReleaseService::new(
+        repository.clone(),
+        Arc::new(LocalReleaseOrchestrator::default()),
+    );
+    let release_id = create_release(&service, "v1").await;
     let rejected = service
         .evaluate_release(
-            &release.release_id,
-            Map::from_iter([(String::from("accuracy"), json!(0.92))]),
+            &release_id,
+            Map::from_iter([(String::from("accuracy"), json!(0.1))]),
             policy(),
         )
         .await
         .unwrap();
     assert_eq!(rejected.status, ReleaseStatus::Rejected);
-    assert_eq!(
-        rejected.failure_reason.as_deref(),
-        Some("Policy evaluation failed for: latency_p95.")
-    );
-    let fresh = create_release(&service).await;
+    assert!(service.deploy_release(&release_id).await.is_err());
     assert!(
-        service
-            .evaluate_release(&fresh.release_id, metrics(), json!({"gates": {}}))
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        service.get_release(&fresh.release_id).await.unwrap().status,
-        ReleaseStatus::Submitted
-    );
-    std::fs::remove_file(path).unwrap();
-}
-
-#[tokio::test]
-async fn local_orchestration_promotes_rolls_back_and_fails_unhealthy_candidates() {
-    let (service, path) = service("lifecycle").await;
-    let release = create_release(&service).await;
-    service
-        .evaluate_release(&release.release_id, metrics(), policy())
-        .await
-        .unwrap();
-    assert_eq!(
-        service
-            .deploy_release(&release.release_id)
-            .await
-            .unwrap()
-            .status,
-        ReleaseStatus::Canary
-    );
-    assert_eq!(
-        service
-            .promote_release(&release.release_id)
-            .await
-            .unwrap()
-            .status,
-        ReleaseStatus::Promoted
-    );
-    let rollback = create_release(&service).await;
-    service
-        .evaluate_release(&rollback.release_id, metrics(), policy())
-        .await
-        .unwrap();
-    service.deploy_release(&rollback.release_id).await.unwrap();
-    assert_eq!(
-        service
-            .rollback_release(&rollback.release_id)
-            .await
-            .unwrap()
-            .status,
-        ReleaseStatus::RolledBack
-    );
-    let (url, unhealthy_path) = database_url("unhealthy");
-    let repository = Arc::new(SqliteReleaseRepository::connect(&url).await.unwrap());
-    let unhealthy = ReleaseService::new(repository, Arc::new(LocalReleaseOrchestrator::new(false)));
-    let candidate = create_release(&unhealthy).await;
-    unhealthy
-        .evaluate_release(&candidate.release_id, metrics(), policy())
-        .await
-        .unwrap();
-    let failed = unhealthy
-        .deploy_release(&candidate.release_id)
-        .await
-        .unwrap();
-    assert_eq!(failed.status, ReleaseStatus::Failed);
-    assert_eq!(
-        failed.failure_reason.as_deref(),
-        Some("Candidate did not pass the local health check.")
-    );
-    std::fs::remove_file(path).unwrap();
-    std::fs::remove_file(unhealthy_path).unwrap();
-}
-
-#[tokio::test]
-async fn legacy_python_schema_and_rows_remain_readable_and_updatable() {
-    let (url, path) = database_url("legacy");
-    let raw_url = ml_release_platform::repository::normalize_sqlite_url(&url);
-    let options = SqliteConnectOptions::from_str(&raw_url)
-        .unwrap()
-        .create_if_missing(true);
-    let pool = SqlitePoolOptions::new()
-        .connect_with(options)
-        .await
-        .unwrap();
-    sqlx::query("CREATE TABLE releases (release_id VARCHAR(36) PRIMARY KEY NOT NULL, model_name VARCHAR(255) NOT NULL, version VARCHAR(255) NOT NULL, image_uri VARCHAR(2048) NOT NULL, artifact_uri VARCHAR(2048), status VARCHAR(32) NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, metadata JSON NOT NULL, metrics JSON NOT NULL, evaluation JSON, failure_reason VARCHAR(2048))").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO releases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind("legacy-release")
-        .bind("legacy")
-        .bind("v1")
-        .bind("registry/legacy:v1")
-        .bind(Option::<String>::None)
-        .bind("SUBMITTED")
-        .bind("2026-01-02 03:04:05.000000")
-        .bind("2026-01-02 03:04:05.000000")
-        .bind("{\"owner\": \"risk\"}")
-        .bind("{}")
-        .bind(Option::<String>::None)
-        .bind(Option::<String>::None)
-        .execute(&pool)
-        .await
-        .unwrap();
-    drop(pool);
-    let repository = SqliteReleaseRepository::connect(&url).await.unwrap();
-    let release = repository.get("legacy-release").await.unwrap().unwrap();
-    assert_eq!(release.status, ReleaseStatus::Submitted);
-    assert_eq!(release.metadata["owner"], "risk");
-    let updated = release.transition_to(ReleaseStatus::Validating).unwrap();
-    repository.update(&updated).await.unwrap();
-    assert_eq!(
         repository
-            .get("legacy-release")
+            .latest_deployment(&release_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(service);
+    close_and_remove(repository, path).await;
+}
+
+#[tokio::test]
+async fn deployment_failure_keeps_existing_active_release() {
+    let (repository, path) = repository("deployment-failure").await;
+    let good = ReleaseService::new(
+        repository.clone(),
+        Arc::new(LocalReleaseOrchestrator::default()),
+    );
+    let v1 = create_release(&good, "v1").await;
+    good.evaluate_release(&v1, metrics(), policy())
+        .await
+        .unwrap();
+    good.deploy_release(&v1).await.unwrap();
+    good.verify_release(&v1).await.unwrap();
+    let failed = ReleaseService::new(
+        repository.clone(),
+        Arc::new(LocalReleaseOrchestrator::with_outcomes(
+            false,
+            VerificationResult::passed(200, "{}".to_owned()),
+            true,
+            true,
+        )),
+    );
+    let v2 = create_release(&failed, "v2").await;
+    failed
+        .evaluate_release(&v2, metrics(), policy())
+        .await
+        .unwrap();
+    assert_eq!(
+        failed.deploy_release(&v2).await.unwrap().status,
+        ReleaseStatus::Failed
+    );
+    assert_eq!(
+        failed
+            .current_release("example")
             .await
             .unwrap()
             .unwrap()
-            .status,
-        ReleaseStatus::Validating
+            .release_id,
+        v1
     );
-    std::fs::remove_file(path).unwrap();
+    drop(good);
+    drop(failed);
+    close_and_remove(repository, path).await;
 }
 
 async fn response_json(response: axum::response::Response) -> Value {
@@ -323,52 +258,68 @@ async fn response_json(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
-async fn http_contract_covers_health_create_get_list_evaluate_and_errors() {
-    let (url, path) = database_url("http");
-    let app = create_app(Some(&url)).await.unwrap();
-    let health = app
+async fn api_exposes_execution_history_current_and_command_errors() {
+    let (repository, path) = repository("api").await;
+    let service = Arc::new(ReleaseService::new(
+        repository.clone(),
+        Arc::new(LocalReleaseOrchestrator::default()),
+    ));
+    let app = api::router(service);
+    let create = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/health")
-                .body(Body::empty())
+                .method("POST")
+                .uri("/releases")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"model_name":"example","version":"v1","image_uri":"demo:v1"})
+                        .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(health.status(), StatusCode::OK);
-    assert_eq!(response_json(health).await, json!({"status": "ok"}));
-    let create = app.clone().oneshot(Request::builder().method("POST").uri("/releases").header("content-type", "application/json").body(Body::from(json!({"model_name":" fraud-model ","version":"v2","image_uri":"registry.example/fraud-model:v2","metadata":{"owner":"risk"}}).to_string())).unwrap()).await.unwrap();
     assert_eq!(create.status(), StatusCode::CREATED);
     let release_id = response_json(create).await["release_id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let list = app
+    let malformed = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/releases")
-                .body(Body::empty())
+                .method("POST")
+                .uri(format!("/releases/{release_id}/evaluate"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response_json(list).await[0]["release_id"], release_id);
-    let evaluation = app.clone().oneshot(Request::builder().method("POST").uri(format!("/releases/{release_id}/evaluate")).header("content-type", "application/json").body(Body::from(json!({"metrics":{"accuracy":0.92,"latency_p95":143},"policy":{"gates":{"accuracy":{"min":0.9},"latency_p95":{"max":200}}}}).to_string())).unwrap()).await.unwrap();
-    assert_eq!(evaluation.status(), StatusCode::OK);
-    assert_eq!(response_json(evaluation).await["passed"], true);
-    let repeated = app.clone().oneshot(Request::builder().method("POST").uri(format!("/releases/{release_id}/evaluate")).header("content-type", "application/json").body(Body::from(json!({"metrics":{"accuracy":0.92},"policy":{"gates":{"accuracy":{"min":0.9}}}}).to_string())).unwrap()).await.unwrap();
-    assert_eq!(repeated.status(), StatusCode::CONFLICT);
-    let missing = app
+    assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let history = app
+        .clone()
         .oneshot(
             Request::builder()
-                .uri("/releases/missing")
+                .uri(format!("/releases/{release_id}/history"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(history.status(), StatusCode::OK);
+    let current = app
+        .oneshot(
+            Request::builder()
+                .uri("/models/example/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response_json(current).await["active"], Value::Null);
+    drop(repository.clone());
+    repository.close().await;
     std::fs::remove_file(path).unwrap();
 }

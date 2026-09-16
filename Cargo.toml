@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sqlx = { version = "0.8", features = ["chrono", "migrate", "runtime-tokio-rustls", "sqlite", "uuid"] }
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
@@ -26,4 +26,3 @@ unsafe_code = "forbid"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
-

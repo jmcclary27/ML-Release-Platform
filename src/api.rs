@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::{
-    application::{ReleaseService, ServiceError},
+    application::{ReleaseExecutionDetail, ReleaseService, ServiceError},
     domain::{
         models::{Metrics, ModelRelease},
         policy::{GateEvaluation, PolicyEvaluation},
     },
+    repository::{DeploymentAttempt, ReleaseEvent, VerificationResult},
 };
 
 #[derive(Clone)]
@@ -31,6 +32,12 @@ pub fn router(service: Arc<ReleaseService>) -> Router {
         .route("/releases", post(create_release).get(list_releases))
         .route("/releases/{release_id}", get(get_release))
         .route("/releases/{release_id}/evaluate", post(evaluate_release))
+        .route("/releases/{release_id}/deploy", post(deploy_release))
+        .route("/releases/{release_id}/verify", post(verify_release))
+        .route("/releases/{release_id}/rollback", post(rollback_release))
+        .route("/releases/{release_id}/history", get(get_history))
+        .route("/models/{model_name}/history", get(get_model_history))
+        .route("/models/{model_name}/current", get(current_release))
         .with_state(ApiState { service })
 }
 
@@ -38,7 +45,6 @@ pub fn router(service: Arc<ReleaseService>) -> Router {
 struct HealthResponse {
     status: &'static str,
 }
-
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
@@ -126,7 +132,6 @@ struct GateEvaluationResponse {
     passed: bool,
     reason: Option<String>,
 }
-
 impl From<GateEvaluation> for GateEvaluationResponse {
     fn from(value: GateEvaluation) -> Self {
         Self {
@@ -145,7 +150,6 @@ struct EvaluationResponse {
     passed: bool,
     results: Vec<GateEvaluationResponse>,
 }
-
 impl From<PolicyEvaluation> for EvaluationResponse {
     fn from(value: PolicyEvaluation) -> Self {
         Self {
@@ -153,6 +157,30 @@ impl From<PolicyEvaluation> for EvaluationResponse {
             results: value.results.into_iter().map(Into::into).collect(),
         }
     }
+}
+
+#[derive(Serialize)]
+struct ReleaseExecutionResponse {
+    release: ReleaseResponse,
+    deployment: Option<DeploymentAttempt>,
+    verification: Option<VerificationResult>,
+    history: Vec<ReleaseEvent>,
+}
+impl From<ReleaseExecutionDetail> for ReleaseExecutionResponse {
+    fn from(value: ReleaseExecutionDetail) -> Self {
+        Self {
+            release: value.release.into(),
+            deployment: value.deployment,
+            verification: value.verification,
+            history: value.events,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct CurrentReleaseResponse {
+    model_name: String,
+    active: Option<ReleaseResponse>,
 }
 
 async fn create_release(
@@ -188,12 +216,13 @@ async fn list_releases(
 async fn get_release(
     State(state): State<ApiState>,
     Path(release_id): Path<String>,
-) -> Result<Json<ReleaseResponse>, ApiError> {
+) -> Result<Json<ReleaseExecutionResponse>, ApiError> {
     state
         .service
-        .get_release(&release_id)
+        .get_execution_detail(&release_id)
         .await
-        .map(|release| Json(release.into()))
+        .map(Into::into)
+        .map(Json)
         .map_err(ApiError::from)
 }
 
@@ -213,11 +242,105 @@ async fn evaluate_release(
     Ok(Json(evaluation.into()))
 }
 
+async fn deploy_release(
+    State(state): State<ApiState>,
+    Path(release_id): Path<String>,
+) -> Result<Json<ReleaseExecutionResponse>, ApiError> {
+    state
+        .service
+        .deploy_release(&release_id)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .service
+        .get_execution_detail(&release_id)
+        .await
+        .map(Into::into)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn verify_release(
+    State(state): State<ApiState>,
+    Path(release_id): Path<String>,
+) -> Result<Json<ReleaseExecutionResponse>, ApiError> {
+    state
+        .service
+        .verify_release(&release_id)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .service
+        .get_execution_detail(&release_id)
+        .await
+        .map(Into::into)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn rollback_release(
+    State(state): State<ApiState>,
+    Path(release_id): Path<String>,
+) -> Result<Json<ReleaseExecutionResponse>, ApiError> {
+    state
+        .service
+        .rollback_release(&release_id)
+        .await
+        .map_err(ApiError::from)?;
+    state
+        .service
+        .get_execution_detail(&release_id)
+        .await
+        .map(Into::into)
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn get_history(
+    State(state): State<ApiState>,
+    Path(release_id): Path<String>,
+) -> Result<Json<Vec<ReleaseEvent>>, ApiError> {
+    state
+        .service
+        .get_history(&release_id)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn get_model_history(
+    State(state): State<ApiState>,
+    Path(model_name): Path<String>,
+) -> Result<Json<Vec<ReleaseEvent>>, ApiError> {
+    let model_name = validate_string(&model_name, "model_name", 255)?;
+    state
+        .service
+        .get_model_history(&model_name)
+        .await
+        .map(Json)
+        .map_err(ApiError::from)
+}
+
+async fn current_release(
+    State(state): State<ApiState>,
+    Path(model_name): Path<String>,
+) -> Result<Json<CurrentReleaseResponse>, ApiError> {
+    let model_name = validate_string(&model_name, "model_name", 255)?;
+    let active = state
+        .service
+        .current_release(&model_name)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(CurrentReleaseResponse {
+        model_name,
+        active: active.map(Into::into),
+    }))
+}
+
 struct ApiError {
     status: StatusCode,
     detail: String,
 }
-
 impl ApiError {
     fn unprocessable(detail: String) -> Self {
         Self {
@@ -232,7 +355,6 @@ impl ApiError {
         }
     }
 }
-
 impl From<ServiceError> for ApiError {
     fn from(error: ServiceError) -> Self {
         match error {
@@ -245,11 +367,14 @@ impl From<ServiceError> for ApiError {
                 detail: error.to_string(),
             },
             ServiceError::PolicyValidation(error) => Self::unprocessable(error.to_string()),
+            ServiceError::ExecutionEvidence(error) => Self {
+                status: StatusCode::CONFLICT,
+                detail: error,
+            },
             ServiceError::Repository(error) => Self::internal(&error.to_string()),
         }
     }
 }
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (

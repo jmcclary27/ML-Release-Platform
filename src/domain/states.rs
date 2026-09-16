@@ -11,8 +11,9 @@ pub enum ReleaseStatus {
     Validating,
     Ready,
     Deploying,
-    Canary,
-    Promoted,
+    Verifying,
+    RollingBack,
+    Released,
     Rejected,
     RolledBack,
     Failed,
@@ -23,7 +24,7 @@ impl ReleaseStatus {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Promoted | Self::Rejected | Self::RolledBack | Self::Failed
+            Self::Released | Self::Rejected | Self::RolledBack | Self::Failed
         )
     }
 
@@ -37,11 +38,9 @@ impl ReleaseStatus {
                     Self::Ready | Self::Rejected | Self::Failed
                 )
                 | (Self::Ready, Self::Deploying)
-                | (Self::Deploying, Self::Canary | Self::Failed)
-                | (
-                    Self::Canary,
-                    Self::Promoted | Self::RolledBack | Self::Failed
-                )
+                | (Self::Deploying, Self::Verifying | Self::Failed)
+                | (Self::Verifying, Self::Released | Self::RollingBack)
+                | (Self::RollingBack, Self::RolledBack | Self::Failed)
         )
     }
 
@@ -52,8 +51,9 @@ impl ReleaseStatus {
             Self::Validating => "VALIDATING",
             Self::Ready => "READY",
             Self::Deploying => "DEPLOYING",
-            Self::Canary => "CANARY",
-            Self::Promoted => "PROMOTED",
+            Self::Verifying => "VERIFYING",
+            Self::RollingBack => "ROLLING_BACK",
+            Self::Released => "RELEASED",
             Self::Rejected => "REJECTED",
             Self::RolledBack => "ROLLED_BACK",
             Self::Failed => "FAILED",
@@ -76,8 +76,9 @@ impl std::str::FromStr for ReleaseStatus {
             "VALIDATING" => Ok(Self::Validating),
             "READY" => Ok(Self::Ready),
             "DEPLOYING" => Ok(Self::Deploying),
-            "CANARY" => Ok(Self::Canary),
-            "PROMOTED" => Ok(Self::Promoted),
+            "VERIFYING" => Ok(Self::Verifying),
+            "ROLLING_BACK" => Ok(Self::RollingBack),
+            "RELEASED" => Ok(Self::Released),
             "REJECTED" => Ok(Self::Rejected),
             "ROLLED_BACK" => Ok(Self::RolledBack),
             "FAILED" => Ok(Self::Failed),
