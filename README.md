@@ -40,7 +40,8 @@ Later versions may add automatic metric collection, champion-vs-candidate compar
 - SQLite-backed local persistence for release details, optional metadata, metrics, evaluation evidence, and failure reasons.
 - Explicit, centrally validated release-state transitions.
 - Deterministic minimum/maximum metric gates with auditable structured results.
-- A local orchestration adapter and service-level deploy, canary, promotion, and rollback operations; no Kubernetes calls are made.
+- A local Docker orchestration adapter that validates a detector's `/health` response, submits a versioned market-data fixture to `/infer`, validates the prediction response, and promotes or rolls back; no Kubernetes calls are made.
+- CI/client-submitted deterministic metrics and policy evidence. Automatic metric collection is deferred.
 
 Future versions will integrate Amazon EKS, KServe, Argo Rollouts, and production observability.
 
@@ -89,10 +90,10 @@ cargo test --all-features
 
 ## Delivery milestones
 
-- Local Control Plane — **complete**
+- Local Control Plane — **complete** (including real local detector-container verification)
 - AWS/EKS Foundation — **complete** ([ephemeral demo lifecycle](infra/README.md))
 - KServe Integration — **next**
-- Argo Rollouts — **future**
+- Argo Rollouts / End-to-End MVP — **remaining**
 
 ## Example workflow
 
@@ -127,6 +128,16 @@ curl -X POST http://127.0.0.1:8000/releases/<release_id>/evaluate \
 ```
 
 A passing evaluation records its gate results and changes the release from `SUBMITTED` through `VALIDATING` to `READY`. A valid policy with a failed or missing required metric records failed evidence and changes the release to `REJECTED`. Malformed policies are rejected with HTTP 422 without changing the release. `GET /health` returns `{ "status": "ok" }`.
+
+## Detector verification contract
+
+Candidate detector images are external black-box services. The platform does
+not own their model artifacts, feature engineering, or prediction semantics.
+It requires the versioned [`/health` and `/infer` contract](docs/detector-http-contract.md),
+then sends the deterministic [market-data fixture](demo/fixtures/market-data-inference-v1.json)
+during runtime verification. A non-2xx, timeout, or schema-invalid 2xx
+inference response causes rollback; it does not weaken the earlier CI/client
+policy-metrics gate.
 
 ## Roadmap
 

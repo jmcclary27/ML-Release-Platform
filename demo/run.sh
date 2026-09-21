@@ -1,11 +1,12 @@
 #!/usr/bin/env sh
 set -eu
 
-# This is a local-only demo: it builds two images, runs the API, proves rollback,
-# then removes only containers labeled as managed by this release platform.
+# This local-only acceptance demo proves valid promotion, invalid-response
+# rollback, and startup-health rejection against real Docker containers.
 ./demo/build-images.sh
 
 ML_RELEASE_DATABASE_URL="sqlite:///./demo/ml_release_demo.sqlite" \
+ML_RELEASE_STARTUP_TIMEOUT_SECONDS=3 \
   cargo run --bin ml-release-platform >demo/ml_release_demo.log 2>&1 &
 server_pid=$!
 
@@ -28,15 +29,37 @@ until curl -fsS http://127.0.0.1:8000/health >/dev/null; do
   sleep 1
 done
 
-cargo run --bin mlrelease -- deploy example:v1 \
-  --image mlrp-demo-model:good \
+valid_output=$(cargo run --bin mlrelease -- deploy example:v1 \
+  --image mlrp-demo-detector:valid \
   --metrics-file demo/metrics.json \
-  --policy-file demo/policy.json
+  --policy-file demo/policy.json)
+printf '%s\n' "$valid_output"
+printf '%s\n' "$valid_output" | grep -F '"status": "RELEASED"' >/dev/null
+echo "verified: valid detector promoted v1"
 
-cargo run --bin mlrelease -- deploy example:v2 \
-  --image mlrp-demo-model:bad \
+invalid_output=$(cargo run --bin mlrelease -- deploy example:v2 \
+  --image mlrp-demo-detector:invalid \
   --metrics-file demo/metrics.json \
-  --policy-file demo/policy.json
+  --policy-file demo/policy.json)
+printf '%s\n' "$invalid_output"
+printf '%s\n' "$invalid_output" | grep -F '"status": "ROLLED_BACK"' >/dev/null
+printf '%s\n' "$invalid_output" | grep -F 'invalid detector response' >/dev/null
+echo "verified: schema-invalid inference response rolled back v2"
 
-cargo run --bin mlrelease -- current example
-cargo run --bin mlrelease -- history example
+if cargo run --bin mlrelease -- deploy example:v3 \
+  --image mlrp-demo-detector:unhealthy \
+  --metrics-file demo/metrics.json \
+  --policy-file demo/policy.json; then
+  echo "unhealthy detector unexpectedly completed deployment" >&2
+  exit 1
+fi
+echo "verified: unhealthy detector was rejected during deployment"
+
+current_output=$(cargo run --bin mlrelease -- current example)
+printf '%s\n' "$current_output"
+printf '%s\n' "$current_output" | grep -F '"version": "v1"' >/dev/null
+
+history_output=$(cargo run --bin mlrelease -- history example)
+printf '%s\n' "$history_output"
+printf '%s\n' "$history_output" | grep -F 'DEPLOYMENT_FAILED' >/dev/null
+echo "verified: v1 remained active after both failure paths"

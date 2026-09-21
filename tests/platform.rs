@@ -110,7 +110,7 @@ async fn close_and_remove(repository: Arc<SqliteReleaseRepository>, path: PathBu
 }
 
 #[tokio::test]
-async fn failed_runtime_verification_restores_the_previous_active_release_and_audits_it() {
+async fn invalid_runtime_response_restores_the_previous_active_release_and_audits_it() {
     let (repository, path) = repository("critical-rollback").await;
     let good = ReleaseService::new(
         repository.clone(),
@@ -137,10 +137,10 @@ async fn failed_runtime_verification_restores_the_previous_active_release_and_au
     let bad_orchestrator = LocalReleaseOrchestrator::with_outcomes(
         true,
         VerificationResult::failed(
-            VerificationFailureKind::HttpStatus,
-            "demo model rejects inference",
-            Some(500),
-            None,
+            VerificationFailureKind::InvalidResponse,
+            "demo detector returned a schema-invalid inference response",
+            Some(200),
+            Some(include_str!("../demo/model-server/invalid-response-v1.json").to_owned()),
         ),
         true,
         true,

@@ -6,10 +6,14 @@ Run the complete local acceptance demo with:
 ./demo/run.sh
 ```
 
-It builds the deterministic images, starts the API, releases good v1, attempts bad v2,
-prints the restored active v1 and audit history, then removes every platform-managed
-container and its exact local SQLite/log files in a cleanup trap. It never invokes Terraform
-or cloud APIs.
+It builds deterministic reference-detector images, starts the API, promotes valid
+v1 from real fixture inference, rolls back a healthy but schema-invalid v2, rejects
+an unhealthy v3 during startup, verifies that v1 remains active, then removes every
+platform-managed container and its exact local SQLite/log files in a cleanup trap.
+It never invokes Terraform or cloud APIs.
+
+The demo sets a three-second startup-health deadline only to keep the deliberate
+unhealthy-image case fast; the application default remains 30 seconds.
 
 To build images without running the API demo:
 
@@ -17,9 +21,18 @@ To build images without running the API demo:
 ./demo/build-images.sh
 ```
 
-`mlrp-demo-model:good` responds successfully to both `GET /healthz` and `POST /infer`.
-`mlrp-demo-model:bad` has the same startup health response but returns HTTP 503 for inference.
-This lets a release pass deployment health checks and fail only runtime verification.
+`mlrp-demo-detector:valid` is a minimal reference implementation of the
+versioned [detector contract](../docs/detector-http-contract.md): it validates
+the market-bar request and produces deterministic numeric predictions.
+`mlrp-demo-detector:invalid` is healthy but returns the checked-in,
+schema-invalid [`invalid-response-v1.json`](model-server/invalid-response-v1.json)
+with `200`, proving runtime rollback. `mlrp-demo-detector:unhealthy`
+returns `503` from `/health`, proving deployment rejection. The fixture used
+by the platform is [`fixtures/market-data-inference-v1.json`](fixtures/market-data-inference-v1.json).
+
+The reference detector is not the Market Regime Detector and contains no
+trained artifact. That project will eventually provide its own HTTP adapter
+and externally supplied model artifacts behind this same boundary.
 
 After a demo, remove only release-platform-managed containers with:
 

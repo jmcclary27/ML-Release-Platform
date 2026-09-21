@@ -29,7 +29,7 @@ impl Settings {
                 .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned()),
             docker: DockerSettings {
                 container_port: environment_u16("ML_RELEASE_CONTAINER_PORT", 8080),
-                health_path: environment_path("ML_RELEASE_HEALTH_PATH", "/healthz"),
+                health_path: environment_path("ML_RELEASE_HEALTH_PATH", "/health"),
                 inference_path: environment_path("ML_RELEASE_INFERENCE_PATH", "/infer"),
                 startup_timeout: Duration::from_secs(environment_u64(
                     "ML_RELEASE_STARTUP_TIMEOUT_SECONDS",
