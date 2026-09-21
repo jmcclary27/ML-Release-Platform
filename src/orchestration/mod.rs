@@ -10,12 +10,19 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde::Deserialize;
+use serde_json::Value;
 use tokio::{process::Command, time::sleep};
 
 use crate::domain::{errors::OrchestrationError, models::ModelRelease};
 
 const MANAGED_LABEL: &str = "ml-release-platform.managed=true";
 const CONTAINER_PORT: u16 = 8080;
+const DETECTOR_CONTRACT_VERSION: &str = "v1";
+const VERIFICATION_REQUEST: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/demo/fixtures/market-data-inference-v1.json"
+));
 
 /// Concrete identity and loopback endpoint of a deployed candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,8 +36,31 @@ pub struct DeploymentHandle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerificationFailureKind {
     HttpStatus,
+    InvalidResponse,
     Timeout,
     Transport,
+}
+
+#[derive(Deserialize)]
+struct DetectorHealthResponse {
+    contract_version: String,
+    status: String,
+    model_id: String,
+}
+
+#[derive(Deserialize)]
+struct DetectorPredictionResponse {
+    contract_version: String,
+    request_id: String,
+    model_id: String,
+    predictions: Vec<DetectorPrediction>,
+}
+
+#[derive(Deserialize)]
+struct DetectorPrediction {
+    timestamp: String,
+    symbol: String,
+    prediction: f64,
 }
 
 /// Result of an inference verification request.
@@ -114,7 +144,7 @@ impl Default for DockerOrchestratorConfig {
     fn default() -> Self {
         Self {
             container_port: CONTAINER_PORT,
-            health_path: "/healthz".to_owned(),
+            health_path: "/health".to_owned(),
             inference_path: "/infer".to_owned(),
             startup_timeout: Duration::from_secs(30),
             poll_interval: Duration::from_millis(250),
@@ -289,7 +319,12 @@ impl DockerReleaseOrchestrator {
                 .request(HttpMethod::Get, &url, None, self.config.poll_interval)
                 .await
             {
-                Ok(response) if (200..300).contains(&response.status) => return Ok(()),
+                Ok(response) if (200..300).contains(&response.status) => {
+                    match validate_health_response(&response.body) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => error,
+                    }
+                }
                 Ok(response) => format!("received HTTP {}", response.status),
                 Err(HttpRequestError::Timeout) => "request timed out".to_owned(),
                 Err(HttpRequestError::Transport(error)) => error,
@@ -397,13 +432,23 @@ impl ReleaseOrchestrator for DockerReleaseOrchestrator {
             .request(
                 HttpMethod::Post,
                 &url,
-                Some("{}"),
+                Some(VERIFICATION_REQUEST),
                 self.config.verification_timeout,
             )
             .await
         {
             Ok(response) if (200..300).contains(&response.status) => {
-                Ok(VerificationResult::passed(response.status, response.body))
+                match validate_prediction_response(&response.body) {
+                    Ok(()) => Ok(VerificationResult::passed(response.status, response.body)),
+                    Err(error) => Ok(VerificationResult::failed(
+                        VerificationFailureKind::InvalidResponse,
+                        format!(
+                            "Inference verification returned an invalid detector response: {error}"
+                        ),
+                        Some(response.status),
+                        Some(response.body),
+                    )),
+                }
             }
             Ok(response) => Ok(VerificationResult::failed(
                 VerificationFailureKind::HttpStatus,
@@ -572,6 +617,65 @@ impl ReleaseOrchestrator for LocalReleaseOrchestrator {
     }
 }
 
+fn validate_health_response(body: &str) -> Result<(), String> {
+    let response: DetectorHealthResponse = serde_json::from_str(body)
+        .map_err(|error| format!("response is not valid health JSON: {error}"))?;
+    if response.contract_version != DETECTOR_CONTRACT_VERSION {
+        return Err(format!(
+            "contract_version must be '{DETECTOR_CONTRACT_VERSION}'"
+        ));
+    }
+    if response.status != "ready" {
+        return Err("status must be 'ready'".to_owned());
+    }
+    if response.model_id.trim().is_empty() {
+        return Err("model_id must not be empty".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_prediction_response(body: &str) -> Result<(), String> {
+    let response: DetectorPredictionResponse = serde_json::from_str(body)
+        .map_err(|error| format!("response is not valid prediction JSON: {error}"))?;
+    if response.contract_version != DETECTOR_CONTRACT_VERSION {
+        return Err(format!(
+            "contract_version must be '{DETECTOR_CONTRACT_VERSION}'"
+        ));
+    }
+    if response.request_id != verification_request_id()? {
+        return Err("request_id does not match the verification request".to_owned());
+    }
+    if response.model_id.trim().is_empty() {
+        return Err("model_id must not be empty".to_owned());
+    }
+    if response.predictions.is_empty() {
+        return Err("predictions must not be empty".to_owned());
+    }
+    for prediction in response.predictions {
+        if prediction.timestamp.trim().is_empty() {
+            return Err("prediction timestamp must not be empty".to_owned());
+        }
+        if prediction.symbol.trim().is_empty() {
+            return Err("prediction symbol must not be empty".to_owned());
+        }
+        if !prediction.prediction.is_finite() {
+            return Err("prediction must be finite".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn verification_request_id() -> Result<String, String> {
+    let request: Value = serde_json::from_str(VERIFICATION_REQUEST)
+        .map_err(|error| format!("bundled verification fixture is invalid JSON: {error}"))?;
+    request
+        .get("request_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "bundled verification fixture has no request_id".to_owned())
+}
+
 fn sanitize_component(value: &str, limit: usize) -> String {
     let mut sanitized = String::with_capacity(value.len().min(limit));
     let mut previous_separator = false;
@@ -734,17 +838,23 @@ mod tests {
 
     struct FakeHttp {
         responses: Mutex<VecDeque<Result<HttpResponse, HttpRequestError>>>,
+        requests: Mutex<Vec<(HttpMethod, String, Option<String>)>>,
     }
 
     #[async_trait]
     impl HttpProbe for FakeHttp {
         async fn request(
             &self,
-            _: HttpMethod,
-            _: &str,
-            _: Option<&str>,
+            method: HttpMethod,
+            endpoint: &str,
+            body: Option<&str>,
             _: Duration,
         ) -> Result<HttpResponse, HttpRequestError> {
+            self.requests.lock().unwrap().push((
+                method,
+                endpoint.to_owned(),
+                body.map(str::to_owned),
+            ));
             self.responses
                 .lock()
                 .unwrap()
@@ -825,8 +935,10 @@ mod tests {
         let http = Arc::new(FakeHttp {
             responses: Mutex::new(VecDeque::from([Ok(HttpResponse {
                 status: 200,
-                body: "healthy".to_owned(),
+                body: r#"{"contract_version":"v1","status":"ready","model_id":"reference:v1"}"#
+                    .to_owned(),
             })])),
+            requests: Mutex::new(Vec::new()),
         });
         let adapter = DockerReleaseOrchestrator::with_dependencies(
             DockerOrchestratorConfig {
@@ -834,7 +946,7 @@ mod tests {
                 ..DockerOrchestratorConfig::default()
             },
             docker.clone(),
-            http,
+            http.clone(),
         );
 
         let handle = adapter.deploy_candidate(&release()).await.unwrap();
@@ -845,6 +957,80 @@ mod tests {
         assert!(commands[0].contains(&MANAGED_LABEL.to_owned()));
         assert!(commands[0].contains(&"127.0.0.1::8080".to_owned()));
         assert_eq!(commands[1][0], "port");
+        assert_eq!(
+            http.requests.lock().unwrap()[0].1,
+            "http://127.0.0.1:45678/health"
+        );
+    }
+
+    #[tokio::test]
+    async fn inference_posts_the_market_fixture_and_requires_a_valid_prediction_contract() {
+        let http = Arc::new(FakeHttp {
+            responses: Mutex::new(VecDeque::from([Ok(HttpResponse {
+                status: 200,
+                body: r#"{"contract_version":"v1","request_id":"mlrp-market-window-2026-09-18","model_id":"reference:v1","predictions":[{"timestamp":"2026-09-18T20:00:00Z","symbol":"SPY","prediction":0.00098}]}"#.to_owned(),
+            })])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let adapter = DockerReleaseOrchestrator::with_dependencies(
+            DockerOrchestratorConfig::default(),
+            Arc::new(FakeDocker {
+                responses: Mutex::new(VecDeque::new()),
+                commands: Mutex::new(Vec::new()),
+            }),
+            http.clone(),
+        );
+
+        let result = adapter
+            .verify_candidate(&DeploymentHandle {
+                container_id: "candidate".to_owned(),
+                container_name: "candidate".to_owned(),
+                endpoint: "http://127.0.0.1:1234".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        assert!(result.passed);
+        let requests = http.requests.lock().unwrap();
+        assert_eq!(requests[0].0, HttpMethod::Post);
+        assert_eq!(requests[0].1, "http://127.0.0.1:1234/infer");
+        assert_eq!(requests[0].2.as_deref(), Some(VERIFICATION_REQUEST));
+    }
+
+    #[tokio::test]
+    async fn schema_invalid_success_response_is_a_verification_failure() {
+        let adapter = DockerReleaseOrchestrator::with_dependencies(
+            DockerOrchestratorConfig::default(),
+            Arc::new(FakeDocker {
+                responses: Mutex::new(VecDeque::new()),
+                commands: Mutex::new(Vec::new()),
+            }),
+            Arc::new(FakeHttp {
+                responses: Mutex::new(VecDeque::from([Ok(HttpResponse {
+                    status: 200,
+                    body: include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/demo/model-server/invalid-response-v1.json"
+                    ))
+                    .to_owned(),
+                })])),
+                requests: Mutex::new(Vec::new()),
+            }),
+        );
+        let result = adapter
+            .verify_candidate(&DeploymentHandle {
+                container_id: "candidate".to_owned(),
+                container_name: "candidate".to_owned(),
+                endpoint: "http://127.0.0.1:1234".to_owned(),
+            })
+            .await
+            .unwrap();
+        assert!(!result.passed);
+        assert_eq!(
+            result.failure_kind,
+            Some(VerificationFailureKind::InvalidResponse)
+        );
+        assert_eq!(result.status, Some(200));
     }
 
     #[tokio::test]
@@ -857,6 +1043,7 @@ mod tests {
             }),
             Arc::new(FakeHttp {
                 responses: Mutex::new(VecDeque::from([Err(HttpRequestError::Timeout)])),
+                requests: Mutex::new(Vec::new()),
             }),
         );
         let result = adapter
@@ -885,6 +1072,7 @@ mod tests {
             }),
             Arc::new(FakeHttp {
                 responses: Mutex::new(VecDeque::new()),
+                requests: Mutex::new(Vec::new()),
             }),
         );
         adapter

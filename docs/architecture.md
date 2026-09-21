@@ -55,8 +55,17 @@ Repositories
    └── SQLite initially
 
 Orchestration
-   └── Local/mock implementation initially
+   └── Local Docker adapter: starts a candidate, validates `/health`, sends a
+       versioned market-bar fixture to `/infer`, and validates the prediction
+       response before the service promotes or rolls back
 ```
+
+The detector is a black-box HTTP workload. Its owner, not this platform,
+owns model artifacts, feature engineering, inference semantics, and runtime
+dependencies. The v1 boundary is documented in
+[the detector HTTP contract](detector-http-contract.md). For the local MVP,
+CI submits deterministic policy metrics before deployment; automatic runtime
+metric collection is intentionally deferred.
 
 ## AWS/EKS foundation
 
