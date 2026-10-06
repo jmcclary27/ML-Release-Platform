@@ -30,17 +30,14 @@
 
 The implemented development foundation includes a two-AZ VPC, a single public EKS managed-node worker (to avoid NAT gateway cost), ECR, private versioned S3 storage, Terraform lifecycle commands, and a Kubernetes Job smoke test. It does not deploy the application or install KServe or Argo Rollouts.
 
-## Milestone 3 — KServe
+## Milestone 3 — KServe (Implemented adapter; cluster acceptance remains environment-dependent)
 
-- Install KServe
-- Deploy candidate model
-- Real orchestration adapter
+- Kubernetes orchestration adapter deploys reference-detector candidates as KServe resources
+- Shared runtime contract verification through the release lifecycle
 
-## Milestone 4 — Argo Rollouts
+## Milestone 4 — Argo Rollouts (Implemented adapter; cluster acceptance remains environment-dependent)
 
-- Progressive rollout
-- Promotion
-- Rollback
+- Adapter-controlled promotion and rollback through Argo/Istio traffic routing
 
 ## Milestone 5 — End-to-End MVP (Remaining)
 

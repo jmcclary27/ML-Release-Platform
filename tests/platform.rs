@@ -1,5 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
+use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -12,7 +16,11 @@ use ml_release_platform::{
         policy::{evaluate_policy, parse_policy},
         states::ReleaseStatus,
     },
-    orchestration::{LocalReleaseOrchestrator, VerificationFailureKind, VerificationResult},
+    orchestration::{
+        DeploymentHandle, HttpResponse, KubernetesOrchestratorConfig, KubernetesReleaseClient,
+        KubernetesReleaseOrchestrator, KubernetesRuntimeResponses, LocalReleaseOrchestrator,
+        VerificationFailureKind, VerificationResult,
+    },
     repository::{ReleaseRepository, SqliteReleaseRepository},
 };
 use serde_json::{Map, Value, json};
@@ -53,6 +61,100 @@ fn policy() -> Value {
 }
 fn metrics() -> Map<String, Value> {
     Map::from_iter([(String::from("accuracy"), json!(0.95))])
+}
+
+struct FakeKubernetesClient {
+    deployment_succeeds: bool,
+    responses: KubernetesRuntimeResponses,
+    promoted: Mutex<bool>,
+    rolled_back: Mutex<bool>,
+}
+
+#[async_trait]
+impl KubernetesReleaseClient for FakeKubernetesClient {
+    async fn deploy_candidate(
+        &self,
+        release: &ml_release_platform::domain::models::ModelRelease,
+        _: &KubernetesOrchestratorConfig,
+    ) -> Result<DeploymentHandle, ml_release_platform::domain::errors::OrchestrationError> {
+        self.deployment_succeeds
+            .then(|| DeploymentHandle {
+                container_id: release.release_id.clone(),
+                container_name: "kserve-example".to_owned(),
+                endpoint: "http://kserve.example".to_owned(),
+                metadata: Map::from_iter([(
+                    "inference_service".to_owned(),
+                    Value::String("kserve-example".to_owned()),
+                )]),
+            })
+            .ok_or_else(|| {
+                ml_release_platform::domain::errors::OrchestrationError(
+                    "KServe create failed.".to_owned(),
+                )
+            })
+    }
+
+    async fn probe_candidate(
+        &self,
+        _: &DeploymentHandle,
+        _: &KubernetesOrchestratorConfig,
+    ) -> Result<KubernetesRuntimeResponses, ml_release_platform::domain::errors::OrchestrationError>
+    {
+        Ok(self.responses.clone())
+    }
+
+    async fn promote_candidate(
+        &self,
+        _: &DeploymentHandle,
+        _: Option<&ml_release_platform::domain::models::ModelRelease>,
+        _: &KubernetesOrchestratorConfig,
+    ) -> Result<(), ml_release_platform::domain::errors::OrchestrationError> {
+        *self.promoted.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn rollback_candidate(
+        &self,
+        _: &DeploymentHandle,
+        _: Option<&ml_release_platform::domain::models::ModelRelease>,
+        _: &KubernetesOrchestratorConfig,
+    ) -> Result<(), ml_release_platform::domain::errors::OrchestrationError> {
+        *self.rolled_back.lock().unwrap() = true;
+        Ok(())
+    }
+
+    async fn cleanup_candidate(
+        &self,
+        _: &DeploymentHandle,
+        _: &KubernetesOrchestratorConfig,
+    ) -> Result<(), ml_release_platform::domain::errors::OrchestrationError> {
+        Ok(())
+    }
+}
+
+fn kubernetes_config() -> KubernetesOrchestratorConfig {
+    KubernetesOrchestratorConfig {
+        namespace: "test".to_owned(),
+        container_port: 8080,
+        health_path: "/health".to_owned(),
+        inference_path: "/infer".to_owned(),
+        startup_timeout: std::time::Duration::from_secs(1),
+        poll_interval: std::time::Duration::from_millis(1),
+        verification_timeout: std::time::Duration::from_secs(1),
+    }
+}
+
+fn healthy_kubernetes_responses() -> KubernetesRuntimeResponses {
+    KubernetesRuntimeResponses {
+        health: HttpResponse {
+            status: 200,
+            body: r#"{"contract_version":"v1","status":"ready","model_id":"reference:v1"}"#.to_owned(),
+        },
+        inference: HttpResponse {
+            status: 200,
+            body: r#"{"contract_version":"v1","request_id":"mlrp-market-window-2026-09-18","model_id":"reference:v1","predictions":[{"timestamp":"2026-09-18T20:00:00Z","symbol":"SPY","prediction":0.00098}]}"#.to_owned(),
+        },
+    }
 }
 
 #[test]
@@ -250,6 +352,49 @@ async fn deployment_failure_keeps_existing_active_release() {
     );
     drop(good);
     drop(failed);
+    close_and_remove(repository, path).await;
+}
+
+#[tokio::test]
+async fn service_drives_kubernetes_backend_through_the_same_lifecycle() {
+    let (repository, path) = repository("kubernetes-backend").await;
+    let fake = Arc::new(FakeKubernetesClient {
+        deployment_succeeds: true,
+        responses: healthy_kubernetes_responses(),
+        promoted: Mutex::new(false),
+        rolled_back: Mutex::new(false),
+    });
+    let service = ReleaseService::new(
+        repository.clone(),
+        Arc::new(KubernetesReleaseOrchestrator::with_client(
+            kubernetes_config(),
+            fake.clone(),
+        )),
+    );
+    let release_id = create_release(&service, "v1").await;
+    service
+        .evaluate_release(&release_id, metrics(), policy())
+        .await
+        .unwrap();
+    assert_eq!(
+        service.deploy_release(&release_id).await.unwrap().status,
+        ReleaseStatus::Verifying
+    );
+    assert_eq!(
+        service.verify_release(&release_id).await.unwrap().status,
+        ReleaseStatus::Released
+    );
+    assert!(*fake.promoted.lock().unwrap());
+    assert_eq!(
+        service
+            .current_release("example")
+            .await
+            .unwrap()
+            .unwrap()
+            .release_id,
+        release_id
+    );
+    drop(service);
     close_and_remove(repository, path).await;
 }
 

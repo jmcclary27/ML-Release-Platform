@@ -246,15 +246,6 @@ impl ReleaseService {
             })
             .await?;
         if verification.passed {
-            // Commit the durable active pointer before retiring the previous container. A
-            // database failure must never remove the only persisted champion deployment.
-            let released = self
-                .repository
-                .promote(
-                    &release,
-                    Some("Candidate passed verification and is active."),
-                )
-                .await?;
             match self
                 .orchestrator
                 .promote_candidate(&candidate, previous.as_ref())
@@ -264,22 +255,45 @@ impl ReleaseService {
                     self.repository
                         .record_event(
                             &release.release_id,
-                            "PREVIOUS_DEPLOYMENT_CLEANED_UP",
-                            Some("Previous active deployment removed after promotion."),
+                            "RUNTIME_PROMOTION_CONFIRMED",
+                            Some("Runtime promotion was confirmed before persisting the active release."),
                         )
                         .await?;
+                    match self
+                        .repository
+                        .promote(
+                            &release,
+                            Some("Candidate passed verification and runtime promotion is active."),
+                        )
+                        .await
+                    {
+                        Ok(released) => Ok(released),
+                        Err(error) => {
+                            let rollback = self
+                                .orchestrator
+                                .rollback_candidate(&candidate, previous.as_ref())
+                                .await;
+                            match rollback {
+                                Ok(()) => Err(error.into()),
+                                Err(rollback_error) => {
+                                    Err(ServiceError::ExecutionEvidence(format!(
+                                        "could not persist a promoted release and compensating rollback failed: {rollback_error}"
+                                    )))
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(error) => {
-                    self.repository
-                        .record_event(
-                            &release.release_id,
-                            "PREVIOUS_DEPLOYMENT_CLEANUP_FAILED",
-                            Some(&error.to_string()),
-                        )
-                        .await?;
+                    self.rollback_after_failure(
+                        &release,
+                        &candidate,
+                        previous.as_ref(),
+                        format!("Runtime promotion failed: {error}"),
+                    )
+                    .await
                 }
             }
-            Ok(released)
         } else {
             self.rollback_after_failure(&release, &candidate, previous.as_ref(), detail)
                 .await
@@ -411,6 +425,7 @@ impl ReleaseService {
                 container_id,
                 container_name,
                 endpoint,
+                metadata: attempt.metadata,
             }),
             _ => Err(ServiceError::ExecutionEvidence(
                 "successful deployment is missing its container identity or endpoint".to_owned(),
@@ -515,6 +530,7 @@ fn deployment_attempt(
         container_id: handle.map(|value| value.container_id.clone()),
         container_name: handle.map(|value| value.container_name.clone()),
         endpoint: handle.map(|value| value.endpoint.clone()),
+        metadata: handle.map_or_else(Map::new, |value| value.metadata.clone()),
         succeeded,
         detail,
         started_at,

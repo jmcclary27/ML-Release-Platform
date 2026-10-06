@@ -51,6 +51,8 @@ pub struct DeploymentAttempt {
     pub container_id: Option<String>,
     pub container_name: Option<String>,
     pub endpoint: Option<String>,
+    #[serde(default)]
+    pub metadata: Map<String, Value>,
     pub succeeded: bool,
     pub detail: Option<String>,
     pub started_at: DateTime<Utc>,
@@ -279,6 +281,13 @@ fn decode_deployment(row: &sqlx::sqlite::SqliteRow) -> Result<DeploymentAttempt,
         container_id: row.try_get("container_id")?,
         container_name: row.try_get("container_name")?,
         endpoint: row.try_get("endpoint")?,
+        metadata: value_as_object(
+            &json_from_database(
+                &row.try_get::<String, _>("orchestration_metadata")?,
+                "orchestration metadata",
+            )?,
+            "orchestration metadata",
+        )?,
         succeeded: row.try_get("succeeded")?,
         detail: row.try_get("detail")?,
         started_at: timestamp_from_database(&row.try_get::<String, _>("started_at")?)?,
@@ -500,8 +509,10 @@ impl ReleaseRepository for SqliteReleaseRepository {
             attempt.attempt_id = Uuid::new_v4().to_string();
         }
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("INSERT INTO deployment_attempts (attempt_id, release_id, container_id, container_name, endpoint, succeeded, detail, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(&attempt.attempt_id).bind(&attempt.release_id).bind(&attempt.container_id).bind(&attempt.container_name).bind(&attempt.endpoint).bind(attempt.succeeded).bind(&attempt.detail).bind(timestamp_to_database(attempt.started_at)).bind(timestamp_to_database(attempt.finished_at)).execute(&mut *transaction).await?;
+        let metadata = serde_json::to_string(&attempt.metadata)
+            .map_err(|error| RepositoryError::InvalidData(error.to_string()))?;
+        sqlx::query("INSERT INTO deployment_attempts (attempt_id, release_id, container_id, container_name, endpoint, orchestration_metadata, succeeded, detail, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&attempt.attempt_id).bind(&attempt.release_id).bind(&attempt.container_id).bind(&attempt.container_name).bind(&attempt.endpoint).bind(metadata).bind(attempt.succeeded).bind(&attempt.detail).bind(timestamp_to_database(attempt.started_at)).bind(timestamp_to_database(attempt.finished_at)).execute(&mut *transaction).await?;
         insert_event(
             &mut transaction,
             &event(
@@ -525,7 +536,7 @@ impl ReleaseRepository for SqliteReleaseRepository {
         &self,
         release_id: &str,
     ) -> Result<Option<DeploymentAttempt>, RepositoryError> {
-        sqlx::query("SELECT attempt_id, release_id, container_id, container_name, endpoint, succeeded, detail, started_at, finished_at FROM deployment_attempts WHERE release_id = ? ORDER BY started_at DESC, attempt_id DESC LIMIT 1")
+        sqlx::query("SELECT attempt_id, release_id, container_id, container_name, endpoint, orchestration_metadata, succeeded, detail, started_at, finished_at FROM deployment_attempts WHERE release_id = ? ORDER BY started_at DESC, attempt_id DESC LIMIT 1")
             .bind(release_id).fetch_optional(&self.pool).await?.map(|row| decode_deployment(&row)).transpose()
     }
 
@@ -764,6 +775,7 @@ mod tests {
                 container_id: Some("candidate-container".to_owned()),
                 container_name: Some("mlrp-example-v2".to_owned()),
                 endpoint: Some("http://127.0.0.1:12345".to_owned()),
+                metadata: Map::new(),
                 succeeded: true,
                 detail: None,
                 started_at: Utc::now(),
