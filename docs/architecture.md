@@ -38,7 +38,7 @@ Argo Rollouts will execute progressive traffic shifts, rollout progression, and 
 
 Amazon EKS will provide the Kubernetes runtime, workload scheduling, and cluster-level infrastructure.
 
-## Current local architecture
+## Current execution architecture
 
 The implemented local control plane has no cloud dependency in its core path:
 
@@ -55,9 +55,11 @@ Repositories
    └── SQLite initially
 
 Orchestration
-   └── Local Docker adapter: starts a candidate, validates `/health`, sends a
-       versioned market-bar fixture to `/infer`, and validates the prediction
-       response before the service promotes or rolls back
+   ├── Local Docker adapter
+   └── Kubernetes adapter: creates KServe candidate services, performs the same
+       health/inference verification through a Kubernetes port-forward, and asks
+       Argo Rollouts (via Istio traffic routing) to promote or roll back only after
+       the release service has made its decision
 ```
 
 The detector is a black-box HTTP workload. Its owner, not this platform,
@@ -71,7 +73,7 @@ metric collection is intentionally deferred.
 
 Terraform under `infra/` provisions the development Kubernetes runtime separately from the application: a two-AZ VPC with public demo-worker subnets, an EKS cluster and one managed node, ECR, and a private S3 artifact bucket. The public-worker topology avoids NAT gateway cost for an hours-long portfolio demo; its Kubernetes API is CIDR-restricted and it has no SSH or public workload configuration. It does not introduce an AWS dependency into the API, application, domain, or local orchestration path.
 
-The future cloud integration remains behind the existing orchestration interface:
+The Kubernetes integration remains behind the existing orchestration interface:
 
 The target cloud architecture is:
 
@@ -127,4 +129,4 @@ This platform is not intended to provide:
 
 ## Implementation guidance
 
-Maintain the dependency direction `API → Application/Service → Domain → Repositories + Infrastructure Adapters`. Infrastructure configuration remains separate from those layers. A future KServe adapter must be introduced behind the orchestration boundary rather than coupling the current Rust API or domain logic directly to AWS or Kubernetes.
+Maintain the dependency direction `API → Application/Service → Domain → Repositories + Infrastructure Adapters`. Infrastructure configuration remains separate from those layers. Kubernetes/KServe/Argo dependencies belong only in the orchestration adapter, never in the API, service, or domain layers.

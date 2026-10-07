@@ -12,7 +12,7 @@ Responsibilities are intentionally separated:
 - **Amazon EKS** provides the Kubernetes runtime.
 - **AWS services** provide infrastructure, storage, container registry, and observability where needed.
 
-The platform does not replace KServe or Argo Rollouts. The Rust control plane remains local-first and does **not** connect to Kubernetes, KServe, Argo Rollouts, or external metrics systems. A separately managed, low-cost, ephemeral AWS/EKS foundation is available under [`infra/`](infra/README.md); it does not deploy this application yet.
+The platform does not replace KServe or Argo Rollouts. The Rust control plane selects Docker by default and can select its Kubernetes KServe/Argo adapter with `ML_RELEASE_ORCHESTRATION_BACKEND=kubernetes`. A separately managed, low-cost, ephemeral AWS/EKS foundation is available under [`infra/`](infra/README.md); it does not deploy this application yet.
 
 ## Product goal
 
@@ -40,10 +40,10 @@ Later versions may add automatic metric collection, champion-vs-candidate compar
 - SQLite-backed local persistence for release details, optional metadata, metrics, evaluation evidence, and failure reasons.
 - Explicit, centrally validated release-state transitions.
 - Deterministic minimum/maximum metric gates with auditable structured results.
-- A local Docker orchestration adapter that validates a detector's `/health` response, submits a versioned market-data fixture to `/infer`, validates the prediction response, and promotes or rolls back; no Kubernetes calls are made.
+- Docker and Kubernetes orchestration adapters that use the same detector `/health` and `/infer` verification contract. The Kubernetes adapter uses KServe for serving and requests observed Argo/Istio traffic promotion or rollback.
 - CI/client-submitted deterministic metrics and policy evidence. Automatic metric collection is deferred.
 
-Future versions will integrate Amazon EKS, KServe, Argo Rollouts, and production observability.
+Production EKS deployment and automatic observability remain future work.
 
 ## High-level architecture
 

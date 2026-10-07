@@ -16,10 +16,16 @@ use tokio::{process::Command, time::sleep};
 
 use crate::domain::{errors::OrchestrationError, models::ModelRelease};
 
+mod kubernetes;
+pub use kubernetes::{
+    KubeReleaseClient, KubernetesOrchestratorConfig, KubernetesReleaseClient,
+    KubernetesReleaseOrchestrator, KubernetesRuntimeResponses,
+};
+
 const MANAGED_LABEL: &str = "ml-release-platform.managed=true";
 const CONTAINER_PORT: u16 = 8080;
-const DETECTOR_CONTRACT_VERSION: &str = "v1";
-const VERIFICATION_REQUEST: &str = include_str!(concat!(
+pub(crate) const DETECTOR_CONTRACT_VERSION: &str = "v1";
+pub(crate) const VERIFICATION_REQUEST: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/demo/fixtures/market-data-inference-v1.json"
 ));
@@ -27,9 +33,12 @@ const VERIFICATION_REQUEST: &str = include_str!(concat!(
 /// Concrete identity and loopback endpoint of a deployed candidate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeploymentHandle {
+    /// Opaque infrastructure identity. Docker uses a container ID; Kubernetes uses an
+    /// `InferenceService` name. The legacy field name is retained in persisted history.
     pub container_id: String,
     pub container_name: String,
     pub endpoint: String,
+    pub metadata: serde_json::Map<String, Value>,
 }
 
 /// Why a runtime verification did not pass.
@@ -414,6 +423,7 @@ impl ReleaseOrchestrator for DockerReleaseOrchestrator {
             container_id,
             container_name: name,
             endpoint,
+            metadata: serde_json::Map::new(),
         };
         if let Err(error) = self.wait_for_health(&handle.endpoint).await {
             let _ = self.cleanup_candidate(&handle).await;
@@ -566,6 +576,7 @@ impl LocalReleaseOrchestrator {
             container_id: format!("fake-{}", release.release_id),
             container_name: DockerReleaseOrchestrator::candidate_name(release),
             endpoint: "http://127.0.0.1:0".to_owned(),
+            metadata: serde_json::Map::new(),
         }
     }
 }
@@ -617,7 +628,7 @@ impl ReleaseOrchestrator for LocalReleaseOrchestrator {
     }
 }
 
-fn validate_health_response(body: &str) -> Result<(), String> {
+pub(crate) fn validate_health_response(body: &str) -> Result<(), String> {
     let response: DetectorHealthResponse = serde_json::from_str(body)
         .map_err(|error| format!("response is not valid health JSON: {error}"))?;
     if response.contract_version != DETECTOR_CONTRACT_VERSION {
@@ -634,7 +645,7 @@ fn validate_health_response(body: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_prediction_response(body: &str) -> Result<(), String> {
+pub(crate) fn validate_prediction_response(body: &str) -> Result<(), String> {
     let response: DetectorPredictionResponse = serde_json::from_str(body)
         .map_err(|error| format!("response is not valid prediction JSON: {error}"))?;
     if response.contract_version != DETECTOR_CONTRACT_VERSION {
@@ -699,7 +710,7 @@ fn sanitize_component(value: &str, limit: usize) -> String {
     }
 }
 
-fn join_url(endpoint: &str, path: &str) -> String {
+pub(crate) fn join_url(endpoint: &str, path: &str) -> String {
     format!(
         "{}/{}",
         endpoint.trim_end_matches('/'),
@@ -986,6 +997,7 @@ mod tests {
                 container_id: "candidate".to_owned(),
                 container_name: "candidate".to_owned(),
                 endpoint: "http://127.0.0.1:1234".to_owned(),
+                metadata: serde_json::Map::new(),
             })
             .await
             .unwrap();
@@ -1022,6 +1034,7 @@ mod tests {
                 container_id: "candidate".to_owned(),
                 container_name: "candidate".to_owned(),
                 endpoint: "http://127.0.0.1:1234".to_owned(),
+                metadata: serde_json::Map::new(),
             })
             .await
             .unwrap();
@@ -1051,6 +1064,7 @@ mod tests {
                 container_id: "candidate".to_owned(),
                 container_name: "candidate".to_owned(),
                 endpoint: "http://127.0.0.1:1234".to_owned(),
+                metadata: serde_json::Map::new(),
             })
             .await
             .unwrap();
@@ -1080,6 +1094,7 @@ mod tests {
                 container_id: "candidate".to_owned(),
                 container_name: "candidate".to_owned(),
                 endpoint: "http://127.0.0.1:1234".to_owned(),
+                metadata: serde_json::Map::new(),
             })
             .await
             .unwrap();

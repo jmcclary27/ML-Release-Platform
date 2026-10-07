@@ -7,7 +7,23 @@ pub const DEFAULT_DATABASE_URL: &str = "sqlite:///./ml_release_platform.db";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Settings {
     pub database_url: String,
+    pub orchestration_backend: OrchestrationBackend,
     pub docker: DockerSettings,
+    pub kubernetes: KubernetesSettings,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrchestrationBackend {
+    Docker,
+    Kubernetes,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KubernetesSettings {
+    pub namespace: String,
+    pub startup_timeout: Duration,
+    pub poll_interval: Duration,
+    pub verification_timeout: Duration,
 }
 
 /// Runtime settings for the local Docker serving adapter.
@@ -27,10 +43,34 @@ impl Settings {
         Self {
             database_url: std::env::var("ML_RELEASE_DATABASE_URL")
                 .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned()),
+            orchestration_backend: match std::env::var("ML_RELEASE_ORCHESTRATION_BACKEND")
+                .as_deref()
+            {
+                Ok("kubernetes") => OrchestrationBackend::Kubernetes,
+                _ => OrchestrationBackend::Docker,
+            },
             docker: DockerSettings {
                 container_port: environment_u16("ML_RELEASE_CONTAINER_PORT", 8080),
                 health_path: environment_path("ML_RELEASE_HEALTH_PATH", "/health"),
                 inference_path: environment_path("ML_RELEASE_INFERENCE_PATH", "/infer"),
+                startup_timeout: Duration::from_secs(environment_u64(
+                    "ML_RELEASE_STARTUP_TIMEOUT_SECONDS",
+                    30,
+                )),
+                poll_interval: Duration::from_millis(environment_u64(
+                    "ML_RELEASE_HEALTH_POLL_MILLISECONDS",
+                    250,
+                )),
+                verification_timeout: Duration::from_secs(environment_u64(
+                    "ML_RELEASE_VERIFICATION_TIMEOUT_SECONDS",
+                    10,
+                )),
+            },
+            kubernetes: KubernetesSettings {
+                namespace: std::env::var("ML_RELEASE_KUBERNETES_NAMESPACE")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "ml-release-platform".to_owned()),
                 startup_timeout: Duration::from_secs(environment_u64(
                     "ML_RELEASE_STARTUP_TIMEOUT_SECONDS",
                     30,
